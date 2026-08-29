@@ -51,7 +51,7 @@ def _run_print_mode(task: str) -> int:
     from cyent.utils.errors import ConfigError, CyentError
 
     try:
-        session = Session(stream=False)
+        session = Session()
     except ConfigError as exc:
         print("Configuration problem:\n", exc, file=sys.stderr)
         print(
@@ -61,15 +61,13 @@ def _run_print_mode(task: str) -> int:
         return 2
 
     try:
-        final_text, stats = run_single_task(session, task)
+        _, stats = run_single_task(session, task)
     except KeyboardInterrupt:
         return 130
     except CyentError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if final_text and not final_text.startswith("("):
-        print(final_text)
     return int(stats.stop_reason is None or stats.stop_reason.value != "completed")
 
 

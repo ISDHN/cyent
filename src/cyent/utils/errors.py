@@ -145,11 +145,7 @@ def with_retries(
             delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
             delay *= 0.5 + random.random()  # jitter
             log.warning(
-                "Attempt %d/%d failed (%s); retrying in %.1fs",
-                attempt,
-                max_attempts,
-                exc.__class__.__name__,
-                delay,
+                f"Attempt {attempt}/{max_attempts} failed ({exc.__class__.__name__}); retrying in {delay:.1f}s"
             )
             if on_retry:
                 on_retry(exc, attempt)
