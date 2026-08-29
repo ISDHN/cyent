@@ -9,7 +9,6 @@ Responsibilities:
 - No Anthropic handling (``tool_use`` / ``tool_result``) by design.
 """
 
-from __future__ import annotations
 
 import json
 import logging

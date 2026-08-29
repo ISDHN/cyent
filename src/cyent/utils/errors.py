@@ -1,6 +1,5 @@
 """Error types and retry/backoff helpers (exponential backoff with jitter)."""
 
-from __future__ import annotations
 
 import logging
 import random

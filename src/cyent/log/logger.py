@@ -4,7 +4,6 @@ The REPL owns the terminal; log output there would corrupt the streaming
 rendering. All records go to ``logs/cyent.log`` with secret redaction.
 """
 
-from __future__ import annotations
 
 import logging
 from logging.handlers import RotatingFileHandler

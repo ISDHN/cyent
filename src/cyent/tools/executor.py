@@ -5,7 +5,6 @@ become readable observation text fed back to the model. Outputs are redacted
 before being returned.
 """
 
-from __future__ import annotations
 
 import json
 import logging

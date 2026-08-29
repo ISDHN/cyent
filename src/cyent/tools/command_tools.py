@@ -1,6 +1,5 @@
 """Command tool: run local commands with timeout, workdir boundary, output caps."""
 
-from __future__ import annotations
 
 import os
 import subprocess

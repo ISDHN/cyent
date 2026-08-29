@@ -1,6 +1,5 @@
 """Configuration layer: .env loading, global Settings, secret registration."""
 
-from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field

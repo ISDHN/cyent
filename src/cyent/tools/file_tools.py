@@ -4,7 +4,6 @@ All paths are confined to the workspace root (path whitelist) unless
 ``allow_outside`` is explicitly enabled.
 """
 
-from __future__ import annotations
 
 import fnmatch
 import os

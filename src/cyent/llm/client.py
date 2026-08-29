@@ -5,7 +5,6 @@ Provides streaming and non-streaming chat; streaming merges split
 ``tool_calls`` deltas back into complete calls by index.
 """
 
-from __future__ import annotations
 
 import json
 import logging

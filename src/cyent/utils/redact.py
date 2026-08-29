@@ -1,6 +1,5 @@
 """Sensitive-data redaction shared by logs, tool outputs and error messages."""
 
-from __future__ import annotations
 
 import re
 from typing import Iterable

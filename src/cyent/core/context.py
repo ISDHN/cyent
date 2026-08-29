@@ -6,7 +6,6 @@ Trimming and summarization must never break this pairing (OpenAI returns 400
 otherwise).
 """
 
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field

@@ -1,6 +1,5 @@
 """Info tools: current working directory, environment info, project tree."""
 
-from __future__ import annotations
 
 import os
 import platform

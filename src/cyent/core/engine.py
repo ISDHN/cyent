@@ -12,7 +12,6 @@ Termination conditions (any one ends the loop):
 5. explicit stop flag.
 """
 
-from __future__ import annotations
 
 import logging
 import threading

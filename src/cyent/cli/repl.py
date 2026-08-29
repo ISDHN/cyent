@@ -2,17 +2,29 @@
 
 The CLI only consumes EngineEvents published by the engine; it never touches
 engine internals (interaction/engine decoupling, per the design doc).
-"""
 
-from __future__ import annotations
+Slash commands live in ``commands.py``; the system prompt lives in
+``prompts.py``.
+"""
 
 import logging
 import sys
 from pathlib import Path
+from typing import TextIO
+import platform
 
+from cyent.cli.commands import CommandRegistry, default_commands
+from cyent.cli.prompts import SYSTEM_PROMPT_TEMPLATE
 from cyent.config.env import Settings
 from cyent.core.context import ContextManager
-from cyent.core.engine import Engine, EngineConfig, EngineEvent, EventType, StopReason
+from cyent.core.engine import (
+    Engine,
+    EngineConfig,
+    EngineEvent,
+    EngineStats,
+    EventType,
+    StopReason,
+)
 from cyent.llm.client import LLMClient
 from cyent.log.logger import setup_logging
 from cyent.tools.command_tools import RunCommandTool
@@ -23,10 +35,12 @@ from cyent.utils.errors import ConfigError
 
 log = logging.getLogger("cyent.cli")
 
-BANNER = """\
-Cyent — minimal coding agent (OpenAI-compatible)
-Type a task and press Enter. Slash commands: /help /model /clear /tools /stats /quit
-"""
+# Banner is assembled at print time so it can use the ANSI constants below.
+BANNER_TITLE = "Cyent — minimal coding agent (OpenAI-compatible)"
+BANNER_HINT = (
+    "Type a task and press Enter. Slash commands: "
+    "/help /model /clear /tools /stats /quit"
+)
 
 # ANSI color controls (ASCII escape sequences).
 ANSI_RESET = "\x1b[0m"
@@ -40,104 +54,15 @@ ANSI_GREEN = "\x1b[32m"  # successful tool result
 ANSI_RED = "\x1b[31m"  # failed tool result (ERROR / non-zero exit / timeout)
 ANSI_YELLOW = "\x1b[33m"  # warnings (stopped reasons)
 
-HELP = """\
-Slash commands:
-  /help            show this help
-  /model [NAME]    show or switch the model
-  /clear           clear conversation context
-  /tools           list available tools
-  /stats           show context/token statistics
-  /quit            exit Cyent (Ctrl+C twice also works)
-Anything else is sent to the agent as a task.
-"""
 
-SYSTEM_PROMPT_TEMPLATE = """\
-# Role
+class Session:
+    """Assembled agent stack: settings + client + context + executor + engine.
 
-You are Cyent, a pragmatic coding agent operating directly inside the user's
-project. You turn requests into working code by investigating first, editing
-precisely, and verifying with real commands. You are autonomous within the
-workspace: prefer acting and verifying over asking, but stop and ask when a
-task is ambiguous, destructive, or outside the workspace.
+    Shared by the interactive REPL and the non-interactive single-task mode so
+    both use identical wiring (system prompt, tools, colors).
+    """
 
-# Environment
-
-- Workspace root: {workdir} — all file tools are confined here; paths outside
-  are denied.
-- Platform: {platform}. Shell commands run via the system shell; mind
-  platform differences (path separators, quoting, command names).
-- Today's date matters for anything time-sensitive; do not assume dates.
-
-# Tools
-
-- read_file: read text files (optionally a 1-based line range). Output is
-  line-numbered and truncated for large files.
-- write_file: create or overwrite a file wholesale. Creates parent dirs.
-- edit_file: replace the FIRST unique occurrence of old_text with new_text.
-  old_text must match exactly (including whitespace/indentation) and appear
-  exactly once; otherwise the edit is rejected. Read the file first and copy
-  the exact snippet — never guess its content.
-- list_dir / project_tree: explore directory structure (ignore dirs are
-  skipped). Start here when unfamiliar with the repo.
-- search_text: plain-text or regex search with file:line output. Prefer it
-  over reading many files; use the glob filter to narrow file types.
-- run_command: run shell commands (builds, tests, git, package managers).
-  Output is truncated; a timeout (default 30s, max 120s) kills the whole
-  process tree. Long-running servers will time out — start them only when
-  the user asks, and say so.
-- pwd / env_info: workspace location, OS, Python version, env vars.
-
-Rules of engagement:
-1. Investigate before you change: for non-trivial tasks, first understand the
-   relevant code (project_tree / search_text / read_file), then act.
-2. Make minimal, surgical edits. Match the file's existing style, formatting,
-   and language. Never reorder or reformat unrelated code, never remove
-   comments or existing behavior as a side effect.
-3. Verify your changes: after editing, run the relevant build/tests/linters
-   via run_command. Fix what breaks before declaring success. If you cannot
-   verify, say so explicitly instead of claiming it works.
-4. Tool arguments must be a single strict JSON object: double quotes, no
-   trailing commas, no code fences, no comments.
-5. Tool failures are data, not disasters: read the error, adjust the
-   approach, retry differently. Never repeat an identical failing call more
-   than twice; if stuck, summarize what you learned and report.
-6. Batch independent reads/searches in one round when possible; keep rounds
-   few and purposeful.
-
-# Conventions
-
-- Do what has been asked; nothing more, nothing less. Complete the current
-  task fully before moving on. Do not create files proactively "for later".
-- Only modify what the task requires. If you notice an unrelated bug, mention
-  it in your final answer instead of fixing it unasked.
-- Preserve the user's unfinished work: if a file contains incomplete edits,
-  integrate around them rather than overwriting.
-- Follow existing project conventions: package manager (check for
-  pyproject.toml / package.json / Cargo.toml ...), test framework, code
-  style. When adding dependencies, use the project's existing manager.
-- Security: never commit, print, or exfiltrate secrets (.env contents, API
-  keys, tokens). Never run destructive commands (rm -rf on wide paths,
-  force-pushes, dropping data) without explicit user instruction.
-
-# Communication
-
-- Match the user's language: reply in Chinese when they write Chinese,
-  English when they write English.
-- Be concise and factual. Lead with the outcome; add detail only when it
-  aids understanding. No filler, no apologies, no restating the task.
-- Reference code as `path:line` so the user can jump to it.
-- Final answer structure for coding tasks: what changed (files + brief
-  why), how it was verified (commands + results), and any caveats or
-  follow-ups. If you did nothing, say what you found instead.
-- Never fabricate tool output, file contents, or command results. If
-  information is missing, gather it with tools or say you don't know.
-"""
-
-
-class Repl:
-    """Terminal REPL driving the engine."""
-
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, stream: bool = True) -> None:
         self.settings = settings
         self.log = setup_logging(settings)
 
@@ -146,7 +71,7 @@ class Repl:
             raise ConfigError("\n".join(problems))
 
         self.client = LLMClient(settings)
-        self.context = ContextManager(system_prompt=self._build_system_prompt())
+        self.context = ContextManager(system_prompt=self.build_system_prompt(settings))
         self.executor = ToolExecutor(
             build_file_tools(settings.workdir)
             + build_info_tools(settings.workdir)
@@ -157,27 +82,179 @@ class Repl:
             self.client,
             self.context,
             self.executor,
-            EngineConfig(),  # no iteration cap; termination via events
+            EngineConfig(stream=stream),  # no iteration cap; termination via events
         )
+
+    @staticmethod
+    def build_system_prompt(settings: Settings) -> str:
+        return SYSTEM_PROMPT_TEMPLATE.format(
+            workdir=settings.workdir,
+            platform=f"{platform.system()} {platform.release()}",
+        )
+
+
+class EventRenderer:
+    """Renders EngineEvents to a stream (REPL: stdout; print mode: split)."""
+
+    def __init__(self, engine: Engine, *, out: TextIO | None = None) -> None:
+        self.engine = engine
+        self._out = out if out is not None else sys.stdout
         self._streaming = False  # True while assistant text is mid-stream
         self._thinking = False  # True while reasoning text is mid-stream
 
     # ------------------------------------------------------------------ #
-    def _build_system_prompt(self) -> str:
-        import platform
+    def _w(self, text: str = "", *, end: str = "\n", flush: bool = False) -> None:
+        print(text, file=self._out, end=end, flush=flush)
 
-        return SYSTEM_PROMPT_TEMPLATE.format(
-            workdir=self.settings.workdir,
-            platform=f"{platform.system()} {platform.release()}",
+    def _break_stream(self) -> None:
+        """End an in-progress streamed text block with a newline."""
+        if self._streaming:
+            self._w(flush=True)
+            self._streaming = False
+
+    def _break_thinking(self) -> None:
+        """End an in-progress thinking block (reset color)."""
+        if self._thinking:
+            self._w(ANSI_RESET, end="")
+            self._thinking = False
+
+    # ------------------------------------------------------------------ #
+    def render(self, event: EngineEvent) -> None:
+        match event.type:
+            case EventType.THINKING_DELTA:
+                # Reasoning content: streamed in light gray. If normal text
+                # starts afterwards, the color is reset by _break_thinking.
+                if not self._thinking:
+                    self._break_stream()
+                    self._w(ANSI_THINKING, end="")
+                    self._thinking = True
+                self._w(event.text, end="", flush=True)
+            case EventType.TEXT_DELTA:
+                # Live token streaming: print deltas inline, no newline.
+                self._break_thinking()
+                self._w(event.text, end="", flush=True)
+                self._streaming = True
+            case EventType.ROUND_START:
+                if event.round > 1:
+                    self._break_thinking()
+                    self._break_stream()
+            case EventType.TOOL_START:
+                # A tool call interrupts any streamed text; close the block.
+                self._break_thinking()
+                self._break_stream()
+                args = event.tool_args
+                shown = args if len(args) <= 120 else args[:117] + "..."
+                self._w(f"  {ANSI_CYAN}[tool] {event.tool_name}({shown}){ANSI_RESET}")
+            case EventType.TOOL_RESULT:
+                result = event.tool_result
+                if len(result) > 400:
+                    result = result[:397] + "..."
+                # Failed tool runs (errors, non-zero exit, timeouts) are
+                # rendered in red; successful ones in green.
+                failed = self.is_failed_result(result)
+                color = ANSI_RED if failed else ANSI_GREEN
+                indented = "\n".join(
+                    f"  {color}| {line}{ANSI_RESET}" for line in result.splitlines()
+                )
+                self._w(indented)
+            case EventType.FINAL:
+                # The final answer was already streamed token-by-token; just
+                # close the block and print the run summary.
+                self._break_thinking()
+                self._break_stream()
+                reason = event.stop_reason or StopReason.COMPLETED
+                if reason != StopReason.COMPLETED:
+                    self._w(f"  {ANSI_YELLOW}[stopped: {reason.value}]{ANSI_RESET}")
+                stats = self.engine.stats
+                self._w(
+                    f"  ({stats.rounds} rounds, {stats.tool_calls} tool calls, "
+                    f"~{stats.prompt_tokens + stats.completion_tokens} tokens)\n"
+                )
+            case EventType.INTERRUPTED:
+                self._break_thinking()
+                self._break_stream()
+                self._w("(interrupted)")
+            case EventType.ERROR:
+                self._break_thinking()
+                self._break_stream()
+                self._w(f"{ANSI_RED}[error] {event.text}{ANSI_RESET}\n")
+
+    @staticmethod
+    def is_failed_result(result: str) -> bool:
+        """Heuristic: did this tool observation report a failure?"""
+        head = result[:200].lstrip().lower()
+        return (
+            head.startswith("error")
+            or head.startswith("exit_code: 1")
+            or head.startswith("exit_code: -")
+            or "timed out" in head
+            or "exit_code: 1" in result[:120]
+            or "exit_code: 2" in result[:120]
+            or "exit_code: -1" in result[:120]
         )
+
+
+def run_single_task(session: Session, task: str) -> tuple[str, EngineStats]:
+    """Run one task non-interactively and render events.
+
+    Assistant text/thinking stream to stdout; tool activity goes to stderr so
+    the final answer can be piped cleanly. Returns (final_text, stats).
+    """
+    renderer_out = EventRenderer(session.engine)
+    renderer_err = EventRenderer(session.engine, out=sys.stderr)
+    final_text = ""
+    try:
+        for event in session.engine.run(task):
+            # Text/thinking -> stdout; tool activity -> stderr.
+            if event.type in (EventType.TEXT_DELTA, EventType.THINKING_DELTA):
+                renderer_out.render(event)
+            else:
+                renderer_err.render(event)
+            if event.type == EventType.FINAL:
+                final_text = event.text
+    except KeyboardInterrupt:
+        session.engine.request_interrupt()
+        print("\n(interrupted)", file=sys.stderr)
+        raise
+    return final_text, session.engine.stats
+
+
+class Repl:
+    """Terminal REPL driving the engine."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        commands: CommandRegistry | None = None,
+    ) -> None:
+        self.session = Session(settings)
+        self.settings = settings
+        self.log = self.session.log
+        self.client = self.session.client
+        self.context = self.session.context
+        self.executor = self.session.executor
+        self.engine = self.session.engine
+        self.renderer = EventRenderer(self.engine)
+        # Slash commands: default set, or a custom registry for extension.
+        self.commands = commands or CommandRegistry(default_commands())
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _build_system_prompt(settings: Settings) -> str:
+        return Session.build_system_prompt(settings)
 
     # ------------------------------------------------------------------ #
     # Main loop
     # ------------------------------------------------------------------ #
     def run(self) -> int:
-        print(BANNER)
-        print(f"model: {self.settings.model} | endpoint: {self.settings.base_url}")
-        print(f"workspace: {self.settings.workdir}\n")
+        print(f"{ANSI_CYAN}{BANNER_TITLE}{ANSI_RESET}")
+        print(f"{ANSI_THINKING}{BANNER_HINT}{ANSI_RESET}")
+        print(
+            f"{ANSI_CYAN}model:{ANSI_RESET} {self.settings.model} "
+            f"{ANSI_CYAN}| endpoint:{ANSI_RESET} {self.settings.base_url}"
+        )
+        print(f"{ANSI_CYAN}workspace:{ANSI_RESET} {self.settings.workdir}\n")
 
         while True:
             try:
@@ -209,147 +286,34 @@ class Repl:
     # ------------------------------------------------------------------ #
     def _run_task(self, user_input: str) -> None:
         """Consume engine events and render them (streaming)."""
-        self._streaming = False  # True while assistant text is being printed
-        self._thinking = False  # True while reasoning text is being printed
         try:
             for event in self.engine.run(user_input):
-                self._render(event)
+                self.renderer.render(event)
         except KeyboardInterrupt:
             self.engine.request_interrupt()
             print("\n(interrupted — back to prompt)")
 
-    def _break_stream(self) -> None:
-        """End an in-progress streamed text block with a newline."""
-        if self._streaming:
-            print()
-            self._streaming = False
-
-    def _break_thinking(self) -> None:
-        """End an in-progress thinking block (reset color, newline)."""
-        if self._thinking:
-            print(ANSI_RESET)
-            self._thinking = False
-
-    def _render(self, event: EngineEvent) -> None:
-        match event.type:
-            case EventType.THINKING_DELTA:
-                # Reasoning content: streamed in light gray. If normal text
-                # starts afterwards, the color is reset by _break_thinking.
-                if not self._thinking:
-                    self._break_stream()
-                    print(ANSI_THINKING, end="")
-                    self._thinking = True
-                print(event.text, end="", flush=True)
-            case EventType.TEXT_DELTA:
-                # Live token streaming: print deltas inline, no newline.
-                self._break_thinking()
-                print(event.text, end="", flush=True)
-                self._streaming = True
-            case EventType.ROUND_START:
-                if event.round > 1:
-                    self._break_thinking()
-                    self._break_stream()
-            case EventType.TOOL_START:
-                # A tool call interrupts any streamed text; close the block.
-                self._break_thinking()
-                self._break_stream()
-                args = event.tool_args
-                shown = args if len(args) <= 120 else args[:117] + "..."
-                print(f"  {ANSI_CYAN}[tool] {event.tool_name}({shown}){ANSI_RESET}")
-            case EventType.TOOL_RESULT:
-                result = event.tool_result
-                if len(result) > 400:
-                    result = result[:397] + "..."
-                # Failed tool runs (errors, non-zero exit, timeouts) are
-                # rendered in red; successful ones in green.
-                failed = self._is_failed_result(result)
-                color = ANSI_RED if failed else ANSI_GREEN
-                indented = "\n".join(
-                    f"  {color}| {line}{ANSI_RESET}" for line in result.splitlines()
-                )
-                print(indented)
-            case EventType.FINAL:
-                # The final answer was already streamed token-by-token; just
-                # close the block and print the run summary.
-                self._break_thinking()
-                self._break_stream()
-                reason = event.stop_reason or StopReason.COMPLETED
-                if reason != StopReason.COMPLETED:
-                    print(f"  {ANSI_YELLOW}[stopped: {reason.value}]{ANSI_RESET}")
-                stats = self.engine.stats
-                print(
-                    f"  ({stats.rounds} rounds, {stats.tool_calls} tool calls, "
-                    f"~{stats.prompt_tokens + stats.completion_tokens} tokens)\n"
-                )
-            case EventType.INTERRUPTED:
-                self._break_thinking()
-                self._break_stream()
-                print("(interrupted)")
-            case EventType.ERROR:
-                self._break_thinking()
-                self._break_stream()
-                print(f"{ANSI_RED}[error] {event.text}{ANSI_RESET}\n")
-
-    @staticmethod
-    def _is_failed_result(result: str) -> bool:
-        """Heuristic: did this tool observation report a failure?"""
-        head = result[:200].lstrip().lower()
-        return (
-            head.startswith("error")
-            or head.startswith("exit_code: 1")
-            or head.startswith("exit_code: -")
-            or "timed out" in head
-            or "exit_code: 1" in result[:120]
-            or "exit_code: 2" in result[:120]
-            or "exit_code: -1" in result[:120]
-        )
-
     # ------------------------------------------------------------------ #
-    # Slash commands; returns True when the REPL should exit
+    # Slash commands: dispatch via the registry (extensible)
     # ------------------------------------------------------------------ #
     def _handle_command(self, line: str) -> bool:
-        parts = line.split(maxsplit=1)
-        cmd = parts[0].lower()
-        arg = parts[1].strip() if len(parts) > 1 else ""
-
-        match cmd:
-            case "/help" | "/?":
-                print(HELP)
-            case "/quit" | "/exit" | "/q":
-                return True
-            case "/model":
-                if arg:
-                    self.settings.model = arg
-                    print(f"model switched to {arg}")
-                else:
-                    print(f"current model: {self.settings.model}")
-            case "/clear":
-                self.context = ContextManager(system_prompt=self._build_system_prompt())
-                self.engine.context = self.context
-                print("context cleared.")
-            case "/tools":
-                for name in self.executor.tool_names:
-                    tool = self.executor.get(name)
-                    desc = (tool.description or "").splitlines()[0] if tool else ""
-                    print(f"  {name:14s} {desc}")
-            case "/stats":
-                st = self.context.stats_snapshot()
-                es = self.engine.stats
-                print(
-                    f"  messages: {st.messages} | ~tokens: {st.approx_tokens} "
-                    f"| budget: {self.context._budget} | trims: {st.trims} | summaries: {st.summaries}\n"
-                    f"  last run: rounds={es.rounds}, tool_calls={es.tool_calls}, stop={es.stop_reason}"
-                )
-            case _:
-                print(f"unknown command {cmd!r}. Try /help")
-        return False
+        """Execute a '/...' line. Returns True when the REPL should exit."""
+        return self.commands.dispatch(self, line)
 
 
-def launch(workdir: Path | None = None) -> int:
-    """Build settings and start the REPL."""
+def launch(
+    workdir: Path | None = None,
+    *,
+    commands: CommandRegistry | None = None,
+) -> int:
+    """Build settings and start the REPL.
+
+    ``commands``: optional custom CommandRegistry to extend/replace the
+    built-in slash commands.
+    """
     settings = Settings.load(workdir=workdir)
     try:
-        repl = Repl(settings)
+        repl = Repl(settings, commands=commands)
     except ConfigError as exc:
         print("Configuration problem:\n", exc)
         print("\nCopy .env.example to .env and fill in your endpoint/key/model.")
