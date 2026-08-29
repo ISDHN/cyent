@@ -5,8 +5,8 @@ import logging
 import pytest
 
 from cyent.config.env import Settings
-from cyent.log.logger import RedactFilter, setup_logging
-from cyent.utils.errors import AuthError, LLMError, with_retries
+from cyent.log.logger import RedactFilter
+from cyent.utils.errors import AuthError, RateLimitError, with_retries
 from cyent.utils.redact import redact, redact_mapping
 
 
@@ -79,15 +79,6 @@ def test_redact_filter_masks_records():
     assert "sk-abcdef1234567890" not in rec.getMessage()
 
 
-def test_setup_logging_idempotent():
-    s = Settings(api_key="k", log_dir=None) if False else Settings(api_key="k")
-    s.log_dir = s.log_dir  # keep default
-    l1 = setup_logging(s)
-    n_before = len(l1.handlers)
-    l2 = setup_logging(s)
-    assert len(l2.handlers) == n_before  # no duplicate handlers
-
-
 # ---- retry ---- #
 def test_retry_success_after_failures(monkeypatch):
     import cyent.utils.errors as errmod
@@ -98,11 +89,73 @@ def test_retry_success_after_failures(monkeypatch):
     def flaky():
         state["n"] += 1
         if state["n"] < 3:
-            raise LLMError("transient")
+            raise RateLimitError("transient")
         return "ok"
 
     assert with_retries(flaky, max_attempts=4, base_delay=0.01) == "ok"
     assert state["n"] == 3
+
+
+def test_retryability_is_type_property():
+    from cyent.utils.errors import (
+        APIConnectionError,
+        AuthError,
+        BadRequestError,
+        ConfigError,
+        ContextTooLongError,
+        LLMError,
+        RateLimitError,
+        ToolError,
+    )
+
+    assert RateLimitError.retryable is True
+    assert ContextTooLongError.retryable is True
+    assert APIConnectionError.retryable is True
+    assert AuthError.retryable is False
+    assert BadRequestError.retryable is False
+    assert LLMError.retryable is False  # base: not retried by default
+    assert ConfigError.retryable is False
+    assert ToolError.retryable is False
+
+
+def test_wrap_openai_error():
+    from openai import (
+        APIConnectionError as OAIConn,
+        AuthenticationError as OAIAuth,
+        BadRequestError as OAIBad,
+        InternalServerError as OAIInternal,
+        RateLimitError as OAIRate,
+    )
+
+    from cyent.utils.errors import (
+        APIConnectionError,
+        AuthError,
+        BadRequestError,
+        ContextTooLongError,
+        RateLimitError,
+        wrap_openai_error,
+    )
+
+    def make(exc_cls, message, status=None):
+        # Build SDK errors without httpx: pass pre-built kwargs via __new__.
+        exc = exc_cls.__new__(exc_cls)
+        Exception.__init__(exc, message)
+        return exc
+
+    assert isinstance(wrap_openai_error(make(OAIRate, "429")), RateLimitError)
+    assert isinstance(wrap_openai_error(make(OAIAuth, "401")), AuthError)
+    assert isinstance(
+        wrap_openai_error(make(OAIBad, "maximum context length exceeded")),
+        ContextTooLongError,
+    )
+    assert isinstance(wrap_openai_error(make(OAIBad, "invalid body")), BadRequestError)
+    assert isinstance(
+        wrap_openai_error(make(OAIConn, "conn reset")), APIConnectionError
+    )
+    assert isinstance(wrap_openai_error(make(OAIInternal, "500")), APIConnectionError)
+    # Cyent errors pass through unchanged
+    own = AuthError("already typed")
+    assert wrap_openai_error(own) is own
 
 
 def test_retry_auth_not_retried():
@@ -125,8 +178,8 @@ def test_retry_exhaustion(monkeypatch):
 
     def down():
         state["n"] += 1
-        raise LLMError("down")
+        raise RateLimitError("down")
 
-    with pytest.raises(LLMError):
+    with pytest.raises(RateLimitError):
         with_retries(down, max_attempts=3, base_delay=0.01)
     assert state["n"] == 3

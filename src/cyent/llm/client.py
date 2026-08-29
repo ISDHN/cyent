@@ -5,7 +5,6 @@ Provides streaming and non-streaming chat; streaming merges split
 ``tool_calls`` deltas back into complete calls by index.
 """
 
-
 import json
 import logging
 from collections.abc import Iterator
@@ -16,12 +15,7 @@ from openai import OpenAI
 
 from cyent.config.env import Settings
 from cyent.core.types import ChatResult, Message, ToolCall, ToolSchema, Usage
-from cyent.utils.errors import (
-    AuthError,
-    ContextTooLongError,
-    LLMError,
-    RateLimitError,
-)
+from cyent.utils.errors import LLMError, wrap_openai_error
 
 log = logging.getLogger("cyent.llm")
 
@@ -38,32 +32,11 @@ class StreamEvent:
     tool_args_delta: str = ""
 
 
-def _classify_and_raise(exc: Exception) -> None:
-    """Map OpenAI SDK exceptions onto Cyent error types."""
-    import openai
-
-    if isinstance(exc, openai.RateLimitError):
-        raise RateLimitError(f"Rate limited / quota exceeded: {exc}") from exc
-    if isinstance(exc, openai.AuthenticationError | openai.PermissionDeniedError):
-        raise AuthError(
-            f"Authentication failed ({exc}). Check OPENAI_API_KEY / OPENAI_BASE_URL in .env."
-        ) from exc
-    if isinstance(exc, openai.BadRequestError):
-        text = str(exc).lower()
-        if (
-            "context length" in text
-            or "maximum context" in text
-            or "too many tokens" in text
-        ):
-            raise ContextTooLongError(str(exc)) from exc
-        raise LLMError(f"Bad request: {exc}") from exc
-    raise LLMError(f"API error: {exc}") from exc
-
-
 class LLMClient:
     """Unified chat/stream entry points over the OpenAI SDK."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self) -> None:
+        settings = Settings.get()
         self._settings = settings
         self._client = OpenAI(
             base_url=settings.base_url,
@@ -99,8 +72,8 @@ class LLMClient:
         )
         try:
             resp = self._client.chat.completions.create(**kwargs)
-        except Exception as exc:  # noqa: BLE001
-            _classify_and_raise(exc)
+        except Exception as exc:
+            raise wrap_openai_error(exc)
 
         choice = resp.choices[0]
         msg = Message.from_openai(choice.message.model_dump(exclude_none=True))
@@ -152,8 +125,8 @@ class LLMClient:
         )
         try:
             stream = self._client.chat.completions.create(**kwargs)
-        except Exception as exc:  # noqa: BLE001
-            _classify_and_raise(exc)
+        except Exception as exc:
+            raise wrap_openai_error(exc)
 
         holder = CallableResult()
         return self._consume_stream(stream, holder), holder

@@ -1,6 +1,5 @@
 """CLI entry point: ``cyent`` command."""
 
-
 import argparse
 import sys
 from pathlib import Path
@@ -25,34 +24,34 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Run a single task non-interactively and exit.",
     )
-    parser.add_argument(
-        "--env-file",
-        default=None,
-        help="Path to a .env file (default: search ./.env).",
-    )
     args = parser.parse_args(argv)
 
     workdir = Path(args.workdir).resolve() if args.workdir else Path.cwd().resolve()
 
+    from cyent.config.env import Settings
+    from cyent.log.logger import init_logging
+
+    Settings.load(workdir=workdir)
+    init_logging()
+
     if args.print_mode:
-        return _run_print_mode(args, workdir)
+        return _run_print_mode(args.print_mode)
     from cyent.cli.repl import launch
 
-    return launch(workdir)
+    return launch()
 
 
-def _run_print_mode(args: argparse.Namespace, workdir: Path) -> int:
+def _run_print_mode(task: str) -> int:
     """Non-interactive single-task mode: run and print the final answer.
 
-    All wiring (settings, session, rendering) is reused from repl.py.
+    All wiring (session, rendering) is reused from repl.py; configuration
+    comes from the Settings singleton.
     """
     from cyent.cli.repl import Session, run_single_task
-    from cyent.config.env import Settings
     from cyent.utils.errors import ConfigError, CyentError
 
     try:
-        settings = Settings.load(env_file=args.env_file, workdir=workdir)
-        session = Session(settings, stream=False)
+        session = Session(stream=False)
     except ConfigError as exc:
         print("Configuration problem:\n", exc, file=sys.stderr)
         print(
@@ -62,7 +61,7 @@ def _run_print_mode(args: argparse.Namespace, workdir: Path) -> int:
         return 2
 
     try:
-        final_text, stats = run_single_task(session, args.print_mode)
+        final_text, stats = run_single_task(session, task)
     except KeyboardInterrupt:
         return 130
     except CyentError as exc:

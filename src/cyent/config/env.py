@@ -1,4 +1,9 @@
-"""Configuration layer: .env loading, global Settings, secret registration."""
+"""Configuration layer: .env loading, global Settings singleton, secrets.
+
+The settings file is fixed at ``./.env``. ``Settings.load()`` builds the one
+and only instance; everywhere else reads it via ``Settings.get()`` — no
+settings parameter threading through constructors.
+"""
 
 import os
 from dataclasses import dataclass, field
@@ -7,10 +12,12 @@ from dotenv import load_dotenv
 
 from cyent.utils.redact import SecretRegistry
 
+ENV_FILE = Path(".env")
+
 
 @dataclass(slots=True)
 class Settings:
-    """Global runtime configuration, loaded from environment / .env."""
+    """Global runtime configuration, loaded from ``./.env``."""
 
     base_url: str = ""
     api_key: str = ""
@@ -19,18 +26,17 @@ class Settings:
     log_dir: Path = field(default_factory=lambda: Path("logs"))
     workdir: Path = field(default_factory=Path.cwd)
     _secret_registry: SecretRegistry = field(default_factory=SecretRegistry)
+    _instance: Settings | None = None
 
     def __post_init__(self) -> None:
         self.register_secret(self.api_key)
 
     # ------------------------------------------------------------------ #
     @classmethod
-    def load(
-        cls, env_file: str | Path | None = None, workdir: Path | None = None
-    ) -> Settings:
-        """Load .env (if present) and build the settings object."""
-        load_dotenv(env_file if env_file else None)
-        return cls(
+    def load(cls, workdir: Path | None = None) -> Settings:
+        """Load ``./.env`` and install the singleton. Call exactly once."""
+        load_dotenv(ENV_FILE)
+        cls._instance = cls(
             base_url=os.getenv("OPENAI_BASE_URL", "").rstrip("/"),
             api_key=os.getenv("OPENAI_API_KEY", ""),
             model=os.getenv("OPENAI_MODEL", ""),
@@ -38,6 +44,14 @@ class Settings:
             log_dir=Path(os.getenv("CYENT_LOG_DIR", "logs")),
             workdir=(workdir or Path.cwd()).resolve(),
         )
+        return cls._instance
+
+    @classmethod
+    def get(cls) -> Settings:
+        """The loaded settings. ``load()`` must have been called first."""
+        if cls._instance is None:
+            raise RuntimeError("Settings not loaded!")
+        return cls._instance
 
     # ------------------------------------------------------------------ #
     def register_secret(self, secret: str) -> bool:

@@ -26,7 +26,6 @@ from cyent.core.engine import (
     StopReason,
 )
 from cyent.llm.client import LLMClient
-from cyent.log.logger import setup_logging
 from cyent.tools.command_tools import RunCommandTool
 from cyent.tools.executor import ToolExecutor
 from cyent.tools.file_tools import build_file_tools
@@ -56,22 +55,22 @@ ANSI_YELLOW = "\x1b[33m"  # warnings (stopped reasons)
 
 
 class Session:
-    """Assembled agent stack: settings + client + context + executor + engine.
+    """Assembled agent stack: client + context + executor + engine.
 
-    Shared by the interactive REPL and the non-interactive single-task mode so
-    both use identical wiring (system prompt, tools, colors).
+    Configuration comes from the Settings singleton (Settings.get()); the
+    same wiring serves the interactive REPL and single-task mode.
     """
 
-    def __init__(self, settings: Settings, *, stream: bool = True) -> None:
-        self.settings = settings
-        self.log = setup_logging(settings)
+    def __init__(self, *, stream: bool = True) -> None:
+        settings = Settings.get()
+        self.log = logging.getLogger("cyent")
 
         problems = settings.validate()
         if problems:
             raise ConfigError("\n".join(problems))
 
-        self.client = LLMClient(settings)
-        self.context = ContextManager(system_prompt=self.build_system_prompt(settings))
+        self.client = LLMClient()
+        self.context = ContextManager(system_prompt=self.build_system_prompt())
         self.executor = ToolExecutor(
             build_file_tools(settings.workdir)
             + build_info_tools(settings.workdir)
@@ -86,7 +85,8 @@ class Session:
         )
 
     @staticmethod
-    def build_system_prompt(settings: Settings) -> str:
+    def build_system_prompt() -> str:
+        settings = Settings.get()
         return SYSTEM_PROMPT_TEMPLATE.format(
             workdir=settings.workdir,
             platform=f"{platform.system()} {platform.release()}",
@@ -222,14 +222,9 @@ def run_single_task(session: Session, task: str) -> tuple[str, EngineStats]:
 class Repl:
     """Terminal REPL driving the engine."""
 
-    def __init__(
-        self,
-        settings: Settings,
-        *,
-        commands: CommandRegistry | None = None,
-    ) -> None:
-        self.session = Session(settings)
-        self.settings = settings
+    def __init__(self, *, commands: CommandRegistry | None = None) -> None:
+        self.session = Session()
+        self.settings = Settings.get()
         self.log = self.session.log
         self.client = self.session.client
         self.context = self.session.context
@@ -301,19 +296,14 @@ class Repl:
         return self.commands.dispatch(self, line)
 
 
-def launch(
-    workdir: Path | None = None,
-    *,
-    commands: CommandRegistry | None = None,
-) -> int:
-    """Build settings and start the REPL.
+def launch(*, commands: CommandRegistry | None = None) -> int:
+    """Start the REPL (settings singleton must already be loaded).
 
     ``commands``: optional custom CommandRegistry to extend/replace the
     built-in slash commands.
     """
-    settings = Settings.load(workdir=workdir)
     try:
-        repl = Repl(settings, commands=commands)
+        repl = Repl(commands=commands)
     except ConfigError as exc:
         print("Configuration problem:\n", exc)
         print("\nCopy .env.example to .env and fill in your endpoint/key/model.")

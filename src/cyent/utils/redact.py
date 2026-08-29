@@ -61,8 +61,8 @@ def redact(text: str, extra_secrets: Iterable[str] = ()) -> str:
     """Mask registered secrets (default registry plus ``extra_secrets``)."""
     if not text:
         return text
-    for secret in _DEFAULT_REGISTRY.secrets + extra_secrets:
-        if secret in text:
+    for secret in (*_DEFAULT_REGISTRY.secrets, *extra_secrets):
+        if secret and secret in text:
             text = text.replace(secret, _MASK)
     return text
 

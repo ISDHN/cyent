@@ -2,16 +2,15 @@
 
 The REPL owns the terminal; log output there would corrupt the streaming
 rendering. All records go to ``logs/cyent.log`` with secret redaction.
-"""
 
+``init_logging`` is called exactly once from ``main()`` after the settings
+singleton is loaded; it does not guard against repeated calls.
+"""
 
 import logging
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 from cyent.config.env import Settings
-
-_CONFIGURED = False
 
 
 class RedactFilter(logging.Filter):
@@ -31,14 +30,10 @@ class RedactFilter(logging.Filter):
         return True
 
 
-def setup_logging(settings: Settings) -> logging.Logger:
-    """Configure the root 'cyent' logger once; return the package logger."""
-    global _CONFIGURED
+def init_logging() -> logging.Logger:
+    """Configure the 'cyent' logger. Called exactly once from main()."""
     logger = logging.getLogger("cyent")
-
-    if _CONFIGURED:
-        return logger
-
+    settings = Settings.get()
     level = getattr(logging, settings.log_level, logging.INFO)
     logger.setLevel(level)
     logger.propagate = False
@@ -50,7 +45,7 @@ def setup_logging(settings: Settings) -> logging.Logger:
     redact_filter = RedactFilter(settings)
 
     try:
-        log_dir: Path = settings.log_dir
+        log_dir = settings.log_dir
         log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
             log_dir / "cyent.log",
@@ -68,7 +63,6 @@ def setup_logging(settings: Settings) -> logging.Logger:
         logger.addHandler(logging.NullHandler())
         logger.warning("Could not create log file handler; file logging disabled.")
 
-    _CONFIGURED = True
     logger.debug(
         "Logging initialized (level=%s, dir=%s)", settings.log_level, settings.log_dir
     )
