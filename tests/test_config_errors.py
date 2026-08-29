@@ -11,7 +11,11 @@ from cyent.utils.redact import redact, redact_mapping
 
 
 def test_settings_defaults():
-    s = Settings(api_key="sk-test12345678", model="m1")
+    s = Settings(
+        api_key="sk-test12345678",
+        model="m1",
+        base_url="https://api.example.com/v1",
+    )
     assert s.masked_key().startswith("sk-t")
     assert s.validate() == []
 
@@ -21,24 +25,48 @@ def test_settings_missing_key_flagged():
     assert any("OPENAI_API_KEY" in p for p in s.validate())
 
 
-def test_redact_openai_key():
+def test_redact_registered_secret_only():
+    # Registry-based: nothing is masked unless explicitly registered.
     out = redact("use sk-abcdefghijklmnop1234 please")
+    assert "sk-abcdefghijklmnop1234" in out  # not registered -> untouched
+
+    out = redact(
+        "use sk-abcdefghijklmnop1234 please", extra_secrets=["sk-abcdefghijklmnop1234"]
+    )
     assert "sk-abcdefghijklmnop1234" not in out
     assert "***REDACTED***" in out
-
-
-def test_redact_bearer_and_kv():
-    out = redact("Authorization: Bearer zzz123456789, token=qqq1234567890")
-    assert "zzz123456789" not in out and "qqq1234567890" not in out
 
 
 def test_redact_extra_secrets():
     assert "XYZZY-9999" not in redact("x XYZZY-9999 y", extra_secrets=["XYZZY-9999"])
 
 
+def test_redact_short_secrets_allowed():
+    # No min-length restriction: any non-empty registered value is masked.
+    assert "nu" not in redact("nu is a shell", extra_secrets=["nu"])
+
+
 def test_redact_mapping():
-    out = redact_mapping({"k": "sk-abcdefghijklmnop", "n": 5})
-    assert "sk-abcdefghijklmnop" not in out["k"] and out["n"] == 5
+    out = redact_mapping({"k": "XYZZY-9999", "n": 5}, extra_secrets=["XYZZY-9999"])
+    assert "XYZZY-9999" not in out["k"] and out["n"] == 5
+
+
+def test_secret_registry_dedup_and_empty_rejected():
+    from cyent.utils.redact import SecretRegistry
+
+    reg = SecretRegistry()
+    assert reg.register("long-secret-1") is True
+    assert reg.register("long-secret-1") is True  # duplicate: still fine, no dup entry
+    assert reg.secrets.count("long-secret-1") == 1
+    assert reg.register("ab") is True  # short values are allowed now
+    assert reg.register("") is False  # only empty is rejected
+    assert reg.secrets == ["long-secret-1", "ab"]
+
+
+def test_settings_register_secret():
+    s = Settings(api_key="sk-abcdef1234567890")
+    assert s.secrets == ["sk-abcdef1234567890"]
+    assert s.redact("key is sk-abcdef1234567890 end") == "key is ***REDACTED*** end"
 
 
 def test_redact_filter_masks_records():

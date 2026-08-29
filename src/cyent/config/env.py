@@ -1,27 +1,27 @@
 """Configuration layer: .env loading, global Settings, secret registration."""
 
-
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-
 from dotenv import load_dotenv
 
-from cyent.utils.redact import redact
+from cyent.utils.redact import SecretRegistry
 
 
 @dataclass(slots=True)
 class Settings:
     """Global runtime configuration, loaded from environment / .env."""
 
-    base_url: str = "https://api.openai.com/v1"
+    base_url: str = ""
     api_key: str = ""
-    model: str = "gpt-4o-mini"
+    model: str = ""
     log_level: str = "INFO"
     log_dir: Path = field(default_factory=lambda: Path("logs"))
     workdir: Path = field(default_factory=Path.cwd)
-    # Secrets registered for full-chain redaction (logs + tool outputs).
-    _secrets: list[str] = field(default_factory=list)
+    _secret_registry: SecretRegistry = field(default_factory=SecretRegistry)
+
+    def __post_init__(self) -> None:
+        self.register_secret(self.api_key)
 
     # ------------------------------------------------------------------ #
     @classmethod
@@ -30,31 +30,29 @@ class Settings:
     ) -> Settings:
         """Load .env (if present) and build the settings object."""
         load_dotenv(env_file if env_file else None)
-        s = cls(
-            base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip(
-                "/"
-            ),
+        return cls(
+            base_url=os.getenv("OPENAI_BASE_URL", "").rstrip("/"),
             api_key=os.getenv("OPENAI_API_KEY", ""),
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            model=os.getenv("OPENAI_MODEL", ""),
             log_level=os.getenv("CYENT_LOG_LEVEL", "INFO").upper(),
             log_dir=Path(os.getenv("CYENT_LOG_DIR", "logs")),
             workdir=(workdir or Path.cwd()).resolve(),
         )
-        s.register_secret(s.api_key)
-        return s
 
     # ------------------------------------------------------------------ #
-    def register_secret(self, secret: str) -> None:
-        """Register a secret so redact() masks it everywhere."""
-        if secret and secret not in self._secrets:
-            self._secrets.append(secret)
+    def register_secret(self, secret: str) -> bool:
+        """Register a secret so redact() masks it everywhere.
+
+        Returns True if the value was accepted (non-empty, long enough).
+        """
+        return self._secret_registry.register(secret)
 
     @property
     def secrets(self) -> list[str]:
-        return list(self._secrets)
+        return self._secret_registry.secrets
 
     def redact(self, text: str) -> str:
-        return redact(text, self._secrets)
+        return self._secret_registry.redact(text)
 
     def masked_key(self) -> str:
         """Display-safe representation of the API key."""

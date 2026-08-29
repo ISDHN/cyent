@@ -1,32 +1,70 @@
-"""Sensitive-data redaction shared by logs, tool outputs and error messages."""
+"""Sensitive-data redaction shared by logs, tool outputs and error messages.
 
+Registry-based only: secrets must be explicitly registered (via
+``SecretRegistry.register`` or ``Settings.register_secret``) before they are
+masked. No shape-guessing regexes — a value is redacted if and only if it was
+declared sensitive.
+"""
 
-import re
 from typing import Iterable
-
-# Common secret shapes: OpenAI-style keys, bearer tokens, generic assignments.
-_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
-    re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{8,}"),
-    re.compile(
-        r"(?i)(api[_-]?key|token|secret|password|authorization)\s*[=:]\s*['\"]?([^\s'\"]{6,})"
-    ),
-)
 
 _MASK = "***REDACTED***"
 
 
+class SecretRegistry:
+    """Holds the set of sensitive values to mask, with safe registration."""
+
+    def __init__(self, secrets: Iterable[str] = ()) -> None:
+        self._secrets: list[str] = []
+        for s in secrets:
+            self.register(s)
+
+    def register(self, secret: str) -> bool:
+        """Register a secret value. Returns True if it was added.
+
+        Empty values are ignored (they would match everything).
+        """
+        if not secret:
+            return False
+        if secret not in self._secrets:
+            self._secrets.append(secret)
+        return True
+
+    @property
+    def secrets(self) -> list[str]:
+        return list(self._secrets)
+
+    def redact(self, text: str) -> str:
+        """Replace every registered secret occurrence with the mask."""
+        if not text:
+            return text
+        for secret in self._secrets:
+            if secret in text:
+                text = text.replace(secret, _MASK)
+        return text
+
+    def redact_mapping(self, data: dict) -> dict:
+        """Redact every string value in a shallow dict."""
+        return {k: self.redact(v) if isinstance(v, str) else v for k, v in data.items()}
+
+
+# Module-level default registry, for callers that don't own a Settings.
+_DEFAULT_REGISTRY = SecretRegistry()
+
+
+def register_secret(secret: str) -> bool:
+    """Register a secret in the module-level default registry."""
+    return _DEFAULT_REGISTRY.register(secret)
+
+
 def redact(text: str, extra_secrets: Iterable[str] = ()) -> str:
-    """Replace known secret shapes and explicitly registered secrets with a mask."""
+    """Mask registered secrets (default registry plus ``extra_secrets``)."""
     if not text:
         return text
-    out = text
-    for pat in _PATTERNS:
-        out = pat.sub(_MASK, out)
-    for secret in extra_secrets:
-        if secret and len(secret) >= 6:
-            out = out.replace(secret, _MASK)
-    return out
+    for secret in _DEFAULT_REGISTRY.secrets + extra_secrets:
+        if secret in text:
+            text = text.replace(secret, _MASK)
+    return text
 
 
 def redact_mapping(data: dict, extra_secrets: Iterable[str] = ()) -> dict:
