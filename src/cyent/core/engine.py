@@ -131,18 +131,18 @@ class Engine:
             self.stats.rounds = iteration
             yield EngineEvent(type=EventType.ROUND_START, round=iteration)
 
-            # think: call the model (trim + retry once on context overflow)
+            # think: call the model (summarize + retry once on context overflow)
             try:
                 yield from self._stream_deltas()
                 result = self._last_result
             except ContextTooLongError:
-                log.warning("Context too long; trimming and retrying")
-                self.context.trim()
+                log.warning("Context too long; summarizing and retrying")
+                self.context.summarize()
                 try:
                     yield from self._stream_deltas()
                     result = self._last_result
                 except ContextTooLongError:
-                    yield from self._fail("Context still too long after trimming.")
+                    yield from self._fail("Context still too long after summarizing.")
                     return
             except AuthError as exc:
                 yield from self._fail(str(exc))

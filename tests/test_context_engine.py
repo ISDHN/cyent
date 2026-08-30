@@ -25,6 +25,22 @@ def make_history(ctx: ContextManager, n: int, id_prefix: str = "c") -> None:
         ctx.add_assistant(Message.assistant(f"answer {i}"))
 
 
+def make_heavy_history(ctx: ContextManager, n: int, id_prefix: str = "h") -> None:
+    """History that actually exceeds a normal budget (~1.6k tokens/round)."""
+    for i in range(n):
+        ctx.add_user(f"question {i} " + "x" * 2_000)
+        ctx.add_assistant(
+            Message.assistant(
+                content=None,
+                tool_calls=[
+                    ToolCall(id=f"{id_prefix}{i}", name="read_file", raw_arguments="{}")
+                ],
+            )
+        )
+        ctx.add_tool_result(f"{id_prefix}{i}", "content " + "y" * 2_000, "read_file")
+        ctx.add_assistant(Message.assistant(f"answer {i} " + "z" * 2_000))
+
+
 def assert_pairing_valid(messages: list[Message]) -> None:
     assert (
         messages[0].role != "tool"
@@ -46,19 +62,40 @@ def test_trim_keeps_pairing():
 
 
 def test_summarize_keeps_pairing_and_adds_summary():
+    """Under budget: summarize is a no-op; over budget: one pass per call."""
     ctx = ContextManager(system_prompt="s", token_budget=100_000)
     make_history(ctx, 10, id_prefix="d")
-    assert ctx.summarize() is True
-    msgs = ctx.messages
+    assert ctx.summarize() is False  # under budget -> nothing to do
+    assert ctx.stats.summaries == 0
+
+    heavy = ContextManager(system_prompt="s", token_budget=100_000)
+    make_heavy_history(heavy, 10, id_prefix="d")
+    heavy._budget = 8_000  # force over-budget without re-building
+    assert heavy.summarize() is True
+    msgs = heavy.messages
     assert msgs[0].role == "user" and "[context summary" in (msgs[0].content or "")
     assert_pairing_valid(msgs)
 
 
-def test_trim_if_needed_chain():
-    ctx = ContextManager(system_prompt="s", token_budget=500)
-    make_history(ctx, 8, id_prefix="e")
+def test_trim_if_needed_prefers_summarize():
+    """Over budget -> summarize first (info kept), trim only as fallback."""
+    ctx = ContextManager(system_prompt="s", token_budget=8_000)
+    make_heavy_history(ctx, 8)
+    assert ctx.over_budget()  # precondition: really over
     changed = ctx.trim_if_needed()
     assert changed is True
+    assert ctx.stats.summaries >= 1  # summarize ran first
+    assert not ctx.over_budget()  # converged
+    assert_pairing_valid(ctx.messages)
+
+
+def test_summarize_loops_until_under_budget():
+    """A single summarize pass may not suffice; it must repeat."""
+    ctx = ContextManager(system_prompt="s", token_budget=8_000)
+    make_heavy_history(ctx, 12)
+    assert ctx.summarize() is True
+    assert not ctx.over_budget()  # converged
+    assert ctx.stats.summaries >= 2  # needed multiple passes
     assert_pairing_valid(ctx.messages)
 
 

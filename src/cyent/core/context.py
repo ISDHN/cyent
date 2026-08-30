@@ -120,13 +120,14 @@ class ContextManager:
         return self.approx_tokens() > self._budget - RESERVE_FOR_REPLY
 
     def trim_if_needed(self) -> bool:
-        """Trim (then summarize) when over budget. Returns True if changed."""
+        """Compress when over budget: summarize first (keeps information),
+        trim only as a last resort. Returns True if changed."""
         if not self.over_budget():
             return False
-        self.trim()
+        self.summarize()
         if not self.over_budget():
             return True
-        self.summarize()
+        self.trim()
         return True
 
     def trim(self) -> int:
@@ -187,28 +188,34 @@ class ContextManager:
 
         The summary is a synthetic user message ("[context summary] ...")
         followed by the most recent messages (kept pairing-complete).
+        Repeats until under budget or nothing left to compress.
         """
-        if len(self._messages) < 4:
-            return False
+        changed = False
+        while len(self._messages) >= 4 and self.over_budget():
+            keep_from = self._safe_split_point(len(self._messages) // 2)
+            if keep_from <= 1:
+                # Nothing safely splittable (the front is one tool block);
+                # re-summarizing would not shrink anything — stop and let
+                # trim() handle the rest.
+                break
+            old = self._messages[:keep_from]
+            kept = self._messages[keep_from:]
 
-        keep_from = self._safe_split_point(len(self._messages) // 2)
-        old = self._messages[:keep_from]
-        kept = self._messages[keep_from:]
-
-        summary = self._summarize_messages(old)
-        summary_msg = Message.user(
-            f"[context summary of earlier conversation]\n{summary}"
-        )
-        self._messages = [summary_msg, *kept]
-        self.stats.summaries += 1
-        log.info(
-            "summarize: %d messages -> 1 summary + %d kept (~%d tokens)",
-            len(old),
-            len(kept),
-            self.approx_tokens(),
-        )
+            summary = self._summarize_messages(old)
+            summary_msg = Message.user(
+                f"[context summary of earlier conversation]\n{summary}"
+            )
+            self._messages = [summary_msg, *kept]
+            self.stats.summaries += 1
+            changed = True
+            log.info(
+                "summarize: %d messages -> 1 summary + %d kept (~%d tokens)",
+                len(old),
+                len(kept),
+                self.approx_tokens(),
+            )
         self._ensure_no_dangling_tool()
-        return True
+        return changed
 
     def _safe_split_point(self, index: int) -> int:
         """Move ``index`` so that kept messages start a valid pairing block."""
