@@ -1,8 +1,7 @@
-"""Configuration layer: .env loading, global Settings singleton, secrets.
+"""Configuration: .env loading and the global Settings singleton.
 
-The settings file is fixed at ``./.env``. ``Settings.load()`` builds the one
-and only instance; everywhere else reads it via ``Settings.get()`` — no
-settings parameter threading through constructors.
+The settings file is fixed at ``./.env``. ``Settings.load()`` builds the
+one and only instance; everywhere else reads it via ``Settings.get()``.
 """
 
 import os
@@ -32,7 +31,6 @@ class Settings:
     def __post_init__(self) -> None:
         self.register_secret(self.api_key)
 
-    # ------------------------------------------------------------------ #
     @classmethod
     def load(cls, workdir: Path | None = None) -> Settings:
         """Load ``./.env`` and install the singleton. Call exactly once."""
@@ -54,12 +52,8 @@ class Settings:
             raise RuntimeError("Settings not loaded!")
         return cls._instance
 
-    # ------------------------------------------------------------------ #
     def register_secret(self, secret: str) -> bool:
-        """Register a secret so redact() masks it everywhere.
-
-        Returns True if the value was accepted (non-empty, long enough).
-        """
+        """Register a secret so redact() masks it everywhere."""
         return self._secret_registry.register(secret)
 
     @property

@@ -7,7 +7,7 @@ import pytest
 from cyent.config.env import Settings
 from cyent.log.logger import RedactFilter
 from cyent.utils.errors import AuthError, RateLimitError, with_retries
-from cyent.utils.redact import redact, redact_mapping
+from cyent.utils.redact import redact
 
 
 def test_settings_defaults():
@@ -44,11 +44,6 @@ def test_redact_extra_secrets():
 def test_redact_short_secrets_allowed():
     # No min-length restriction: any non-empty registered value is masked.
     assert "nu" not in redact("nu is a shell", extra_secrets=["nu"])
-
-
-def test_redact_mapping():
-    out = redact_mapping({"k": "XYZZY-9999", "n": 5}, extra_secrets=["XYZZY-9999"])
-    assert "XYZZY-9999" not in out["k"] and out["n"] == 5
 
 
 def test_secret_registry_dedup_and_empty_rejected():

@@ -1,10 +1,7 @@
-"""Logging layer: leveled logging to a rotating file only (never the terminal).
+"""Logging: leveled records to a rotating file only (never the terminal).
 
 The REPL owns the terminal; log output there would corrupt the streaming
 rendering. All records go to ``logs/cyent.log`` with secret redaction.
-
-``init_logging`` is called exactly once from ``main()`` after the settings
-singleton is loaded; it does not guard against repeated calls.
 """
 
 import logging
@@ -53,8 +50,7 @@ def init_logging() -> logging.Logger:
         file_handler.addFilter(RedactFilter())
         logger.addHandler(file_handler)
     except OSError:
-        # No file handler available; keep logs in memory (NullHandler) so the
-        # terminal is never polluted.
+        # No file handler available; never pollute the terminal.
         logger.addHandler(logging.NullHandler())
         logger.warning("Could not create log file handler; file logging disabled.")
 

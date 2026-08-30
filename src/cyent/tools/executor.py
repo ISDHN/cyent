@@ -1,15 +1,11 @@
-"""Tool executor: registry, validation, dispatch, isolation, timeouts.
+"""Tool executor: registry, validation, dispatch, isolation.
 
-Every tool call is wrapped: exceptions never propagate to the engine — they
-become readable observation text fed back to the model. Outputs are redacted
-before being returned.
+Exceptions never propagate to the engine — they become readable observation
+text. Outputs are redacted before being returned.
 """
 
-
-import json
 import logging
 import time
-from typing import Any
 
 from cyent.core.types import ToolCall, ToolSchema
 from cyent.tools.base import BaseTool
@@ -32,9 +28,7 @@ class ToolExecutor:
             self._tools[tool.name] = tool
         self._secrets = secrets or []
 
-    # ------------------------------------------------------------------ #
     # Registry access
-    # ------------------------------------------------------------------ #
     @property
     def tool_names(self) -> list[str]:
         return list(self._tools)
@@ -43,18 +37,9 @@ class ToolExecutor:
         return self._tools.get(name)
 
     def schemas(self) -> list[ToolSchema]:
-        """All tool declarations, ready to send to the model."""
         return [t.schema for t in self._tools.values()]
 
-    def schemas_json(self) -> str:
-        """Compact JSON of all schemas (for logs / system prompt)."""
-        return json.dumps(
-            [s.to_openai() for s in self.schemas()], ensure_ascii=False, indent=2
-        )
-
-    # ------------------------------------------------------------------ #
     # Execution
-    # ------------------------------------------------------------------ #
     def execute(self, call: ToolCall) -> str:
         """Execute one ToolCall and return the observation text (never raises)."""
         name = call.name
@@ -82,7 +67,6 @@ class ToolExecutor:
             known = ", ".join(sorted(self._tools)) or "(none)"
             return f"ERROR: unknown tool {call.name!r}. Available tools: {known}"
 
-        # Validation (schema-driven, light)
         err = tool.validate(call.arguments)
         if err:
             raise ToolValidationError(f"invalid arguments for {call.name!r}: {err}")
@@ -90,7 +74,7 @@ class ToolExecutor:
         try:
             result = tool.run(**call.arguments)
         except TypeError as exc:
-            # unexpected kwarg or signature mismatch -> readable retry hint
+            # signature mismatch -> readable retry hint
             raise ToolValidationError(
                 f"{call.name!r} rejected arguments: {exc}"
             ) from exc
@@ -102,8 +86,3 @@ class ToolExecutor:
             ) from exc
 
         return result if isinstance(result, str) else tool.format_result(result)
-
-    # ------------------------------------------------------------------ #
-    def execute_batch(self, calls: list[ToolCall]) -> list[tuple[ToolCall, str]]:
-        """Execute calls sequentially, preserving order for message pairing."""
-        return [(call, self.execute(call)) for call in calls]

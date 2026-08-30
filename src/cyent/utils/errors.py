@@ -65,23 +65,14 @@ class ToolError(CyentError):
     """Tool execution failure (converted to observation text, never fatal)."""
 
 
-class ToolTimeoutError(ToolError):
-    """Tool exceeded its time budget."""
-
-
 class ToolValidationError(ToolError):
     """Tool arguments failed validation."""
 
 
-# --------------------------------------------------------------------------- #
 # OpenAI SDK error wrapping (the only place that imports openai exceptions)
-# --------------------------------------------------------------------------- #
 def wrap_openai_error(exc: Exception) -> CyentError:
     """Map an OpenAI SDK exception onto the matching Cyent error type.
-
-    Returns the original exception unchanged if it is already a CyentError
-    or not an OpenAI SDK error.
-    """
+    Non-OpenAI exceptions pass through unchanged."""
     from openai import (
         APIConnectionError as OpenAIConnectionError,
         APITimeoutError as OpenAITimeoutError,
@@ -122,9 +113,7 @@ def wrap_openai_error(exc: Exception) -> CyentError:
             return LLMError(f"API error: {exc}")
 
 
-# --------------------------------------------------------------------------- #
 # Retry with exponential backoff + jitter
-# --------------------------------------------------------------------------- #
 def with_retries(
     fn: Callable[[], T],
     *,

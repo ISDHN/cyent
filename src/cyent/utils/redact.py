@@ -43,18 +43,9 @@ class SecretRegistry:
                 text = text.replace(secret, _MASK)
         return text
 
-    def redact_mapping(self, data: dict) -> dict:
-        """Redact every string value in a shallow dict."""
-        return {k: self.redact(v) if isinstance(v, str) else v for k, v in data.items()}
-
 
 # Module-level default registry, for callers that don't own a Settings.
 _DEFAULT_REGISTRY = SecretRegistry()
-
-
-def register_secret(secret: str) -> bool:
-    """Register a secret in the module-level default registry."""
-    return _DEFAULT_REGISTRY.register(secret)
 
 
 def redact(text: str, extra_secrets: Iterable[str] = ()) -> str:
@@ -65,11 +56,3 @@ def redact(text: str, extra_secrets: Iterable[str] = ()) -> str:
         if secret and secret in text:
             text = text.replace(secret, _MASK)
     return text
-
-
-def redact_mapping(data: dict, extra_secrets: Iterable[str] = ()) -> dict:
-    """Redact every string value in a shallow dict (used for tool outputs)."""
-    return {
-        k: redact(v, extra_secrets) if isinstance(v, str) else v
-        for k, v in data.items()
-    }

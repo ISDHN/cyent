@@ -1,16 +1,14 @@
 """Session persistence — JSONL archives of the full conversation history.
 
-One file per session under ``<workdir>/.cyent/sessions/<id>.jsonl``. The
-first line is a meta document (id / model / timestamps / format version);
-every following line is one message in OpenAI wire format
-(``Message.to_archive``). Message appends are flushed + fsynced per line;
-meta updates rewrite the file atomically (tmp + ``os.replace``).
+One file per session under ``<workdir>/.cyent/sessions/<id>.jsonl``: first
+line is meta (id / model / timestamps / version), every following line one
+message (``Message.to_archive``). Appends are flushed + fsynced per line;
+the file is created lazily on first append (empty sessions leave nothing).
 
-Loading validates the ``assistant.tool_calls`` ↔ ``tool`` pairing and
-truncates at the first inconsistency, so a corrupted tail never reaches
-the API (which would answer 400). Message contents are redacted with the
-registered secrets before hitting the disk. The system prompt is NOT
-archived: it is re-rendered from the current environment on load.
+Loading validates the ``tool_calls`` ↔ ``tool`` pairing and truncates at
+the first inconsistency, so a corrupted tail never reaches the API.
+Contents are redacted before hitting the disk; the system prompt is NOT
+archived (re-rendered from the current environment on load).
 """
 
 import json
@@ -107,14 +105,11 @@ class SessionStore:
         self._path: Path | None = None  # currently active archive
         self._meta: dict = {}
 
-    # ------------------------------------------------------------------ #
     @property
     def current_id(self) -> str | None:
         return self._meta.get("id") if self._meta else None
 
-    # ------------------------------------------------------------------ #
     # Lifecycle
-    # ------------------------------------------------------------------ #
     def start(self, model: str) -> str:
         """Arm a fresh archive; the file is created lazily on first append.
 
@@ -143,9 +138,7 @@ class SessionStore:
         self._path = path
         log.info("session adopted: %s", session_id)
 
-    # ------------------------------------------------------------------ #
     # Writing
-    # ------------------------------------------------------------------ #
     def append(self, message: Message) -> None:
         """Append one message (redacted) to the active archive.
 
@@ -189,9 +182,7 @@ class SessionStore:
             os.fsync(f.fileno())
         os.replace(tmp, self._path)
 
-    # ------------------------------------------------------------------ #
     # Reading
-    # ------------------------------------------------------------------ #
     def load(self, session_id: str) -> list[Message]:
         """Load a session's messages; corrupt/unpairable tails are dropped."""
         path = self._dir / f"{session_id}.jsonl"
@@ -242,7 +233,6 @@ class SessionStore:
         sessions = self.list_sessions()
         return sessions[0] if sessions else None
 
-    # ------------------------------------------------------------------ #
     @staticmethod
     def _read_meta(path: Path) -> dict:
         with open(path, encoding="utf-8") as f:

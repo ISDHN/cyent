@@ -14,8 +14,7 @@ from cyent.core.types import Message
 
 log = logging.getLogger("cyent.context")
 
-# Rough per-model context budget (chars//4 estimate). Conservative default
-# that works for common 32k-128k models; configurable.
+# Rough context budget (chars//4 estimate); conservative default.
 DEFAULT_TOKEN_BUDGET = 24_000
 RESERVE_FOR_REPLY = 2_000
 
@@ -40,10 +39,8 @@ class ContextManager:
         self.stats = ContextStats()
         self._on_append: list[Callable[[Message], None]] = []  # observers
 
-    # ------------------------------------------------------------------ #
-    # Persistence hook (session archives subscribe here; context stays
-    # archive-agnostic — it just broadcasts every appended message)
-    # ------------------------------------------------------------------ #
+    # Persistence hook: session archives subscribe here; context just
+    # broadcasts every appended message and stays archive-agnostic.
     def subscribe(self, observer: Callable[[Message], None]) -> None:
         """Call ``observer(message)`` after every appended message."""
         self._on_append.append(observer)
@@ -55,19 +52,7 @@ class ContextManager:
             except Exception:  # noqa: BLE001 — persistence must not kill runs
                 log.exception("context observer failed")
 
-    # ------------------------------------------------------------------ #
-    # System prompt
-    # ------------------------------------------------------------------ #
-    @property
-    def system_message(self) -> Message:
-        return self._system
-
-    def set_system_prompt(self, prompt: str) -> None:
-        self._system = Message.system(prompt)
-
-    # ------------------------------------------------------------------ #
     # Appends (pairing-safe)
-    # ------------------------------------------------------------------ #
     def add_user(self, content: str) -> Message:
         msg = Message.user(content)
         self._messages.append(msg)
@@ -89,20 +74,16 @@ class ContextManager:
         self._notify(msg)
         return msg
 
-    # ------------------------------------------------------------------ #
     # Introspection
-    # ------------------------------------------------------------------ #
     @property
     def messages(self) -> list[Message]:
         return list(self._messages)
 
     def restore(self, messages: list[Message]) -> None:
-        """Replace history with restored messages (no observer broadcast:
-        archives already contain them; re-broadcasting would duplicate)."""
+        """Replace history (no broadcast: archives already hold these)."""
         self._messages = list(messages)
 
     def messages_for_api(self) -> list[Message]:
-        """Full payload for the API: system prompt + history."""
         return [self._system, *self._messages]
 
     def approx_tokens(self) -> int:
@@ -113,9 +94,7 @@ class ContextManager:
         self.stats.approx_tokens = self.approx_tokens()
         return self.stats
 
-    # ------------------------------------------------------------------ #
     # Budget management
-    # ------------------------------------------------------------------ #
     def over_budget(self) -> bool:
         return self.approx_tokens() > self._budget - RESERVE_FOR_REPLY
 
