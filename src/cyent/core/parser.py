@@ -2,7 +2,7 @@
 
 Pulls native ``tool_calls`` out of an assistant message and parses the
 argument JSON, with multi-level repair (code fences, quotes, trailing
-commas, outermost-fragment extraction). No Anthropic handling by design.
+commas, outermost-fragment extraction).
 """
 
 import json

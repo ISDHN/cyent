@@ -2,45 +2,39 @@
 
 ## 一、技术约束与选型
 
-| 维度           | 约定                   | 说明                                                                                                                                                  |
-| -------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **语言运行时** | **Python 3.14**        | 全程使用 3.14 语法与标准库能力                                                                                                                        |
-| **包管理**     | **uv**                 | 用 `pyproject.toml` + `uv` 管理依赖（`uv add` / `uv run` / `uv lock`），不引入 pip 直装                                                               |
-| **模型交互**   | **仅使用 `openai` 库** | 只依赖 `openai` SDK；支持任意 OpenAI 兼容端点（自建网关 / DeepSeek / 本地 vLLM 等）                                                                   |
-| **消息协议**   | **仅处理 OpenAI 格式** | 只兼容 `chat.completions` 的 `role` / `content` / `tool_calls` / `tool` 结构，**不考虑 Anthropic**（去掉 `Claude`、`tool_use`、`tool_result` 等分支） |
-| **API 配置**   | **`.env` 文件**        | 用 `.env` 存 `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`，启动时加载到环境变量                                                              |
-| **可观测性**   | **需要日志**           | 内置分级日志（`logging` + 可选的 `loguru`），agent 循环、工具调用、API 请求、错误均落日志                                                             |
-| **项目名**     | **Cyent**              | 包名 `cyent`，CLI 入口 `cyent`                                                                                                                        |
+| 维度           | 约定                   | 说明                                                                                                                    |
+| -------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| **语言运行时** | **Python 3.14**        | 全程使用 3.14 语法与标准库能力                                                                                          |
+| **包管理**     | **uv**                 | `pyproject.toml` + `uv`（`uv add` / `uv run` / `uv lock`）                                                              |
+| **模型交互**   | **仅使用 `openai` 库** | 支持任意 OpenAI 兼容端点（自建网关 / DeepSeek / 本地 vLLM 等）                                                          |
+| **消息协议**   | **仅处理 OpenAI 格式** | 兼容 `chat.completions` 的 `role` / `content` / `tool_calls` / `tool`                                                  |
+| **API 配置**   | **`.env` 文件**        | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`，启动时加载                                                        |
+| **可观测性**   | **需要日志**           | 标准 `logging` 分级日志，agent 循环、工具调用、API 请求、错误均落日志                                                    |
+| **项目名**     | **Cyent**              | 包名 `cyent`，CLI 入口 `cyent`（argparse）                                                                              |
 
-**依赖清单（均为非 agent 框架）：**
-- `openai`：唯一的模型客户端。
-- `python-dotenv`：加载 `.env`。
-- 日志库：标准 `logging` 或 `loguru`。
-- CLI 库：标准 `argparse` 或 `typer`（二选一即可）。
-- `pytest`：测试（dev 依赖）。
-
-**明确不引入**：LangChain / LlamaIndex / OpenAI Agents SDK / AutoGen / CrewAI / Claude Agent SDK 等任何 agent 框架；不调用 API 服务端托管的 code execution / file 工具。
+**依赖范围**：`openai`（唯一模型客户端）、`python-dotenv`（加载 `.env`）、`pytest`（dev 依赖）；其余全部标准库。所有工具在本地 `subprocess` / 文件 API 执行。
 
 ```mermaid
 flowchart TD
     U[用户输入 / .env 配置] --> UI[CLI 交互层 REPL]
-    UI --> CTX[Context Manager 对话与上下文管理]
-    CTX --> LOG[Logger 日志层]
-    CTX --> ENG[Engine 主循环 Agent Loop]
-    ENG --> LLM[LLM Client openai SDK<br/>OpenAI 兼容端点]
-    LLM --> RES[API 响应]
-    RES --> PARSER[Output Parser 输出解析<br/>OpenAI 格式]
+    UI --> ENG[Engine 主循环<br/>think → act → observe]
+    ENG --> CTX[Context Manager<br/>对话与上下文管理]
+    ENG --> LLM[LLM Client<br/>openai SDK / OpenAI 兼容端点]
+    LLM --> PARSER[Output Parser<br/>tool_calls 提取 + JSON 容错]
     PARSER --> DEC{含 tool_calls?}
-    DEC -- 否 --> TERM[终止条件判定]
-    TERM --> UI
-    DEC -- 是 --> EXEC[Tool Executor 本地执行器]
-    EXEC --> FILE[文件工具 read/write/edit/search]
-    EXEC --> CMD[命令工具 run_command]
-    EXEC --> INFO[信息工具 pwd/ls/env]
-    EXEC --> OBS[观察结果回填 Observe]
-    OBS --> LOG
+    DEC -- 否（最终答复） --> UI
+    DEC -- 是 --> EXEC[Tool Executor<br/>校验 / 分发 / 异常隔离]
+    EXEC --> FILE[文件工具<br/>read/write/edit/search]
+    EXEC --> CMD[命令工具<br/>run_command]
+    EXEC --> INFO[信息工具<br/>pwd/env/tree]
+    FILE --> OBS[观察结果回填]
+    CMD --> OBS
+    INFO --> OBS
     OBS --> CTX
-    CTX --> ENG
+    CTX -->|携带历史进入下一轮| ENG
+    CTX -.->|订阅追加| SESS[(Session Store<br/>JSONL 会话存档)]
+    SESS -.->|恢复历史| CTX
+    CTX -.-> LOG[(Logger 日志)]
 ```
 
 ---
@@ -53,7 +47,7 @@ flowchart TD
 | ---------------- | ------------------- | -------------------------------------------- | ------------------------------------------- |
 | **交互层**       | `cli/`              | REPL、斜杠命令、流式展示、用户中断           | OpenCode `tui` / Claude Code 交互界面       |
 | **配置层**       | `config/env.py`     | `.env` 加载、全局配置对象、密钥脱敏读取      | 各项目 `env` / 配置模块                     |
-| **日志层**       | `log/logger.py`     | 分级日志、敏感信息过滤、日志文件+控制台双写  | 各项目 `logger`                             |
+| **日志层**       | `log/logger.py`     | 分级日志、敏感信息过滤、轮转文件          | 各项目 `logger`                             |
 | **上下文管理层** | `core/context.py`   | 消息历史、token 估算、裁剪/摘要、system 注入 | OpenCode `context` / Claude Code 上下文裁剪 |
 | **主循环层**     | `core/engine.py`    | agent loop 编排、终止判定                    | DeepSeek Harness `agent_loop`               |
 | **模型客户端层** | `llm/client.py`     | 封装 `openai` SDK，统一 chat/stream          | OpenCode `provider`                         |
@@ -65,42 +59,48 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph 交互与外围
-        CLI
-        CONFIG
-        LOG
+    subgraph CLI[cli/ 交互层]
+        REPL[repl.py REPL+渲染]
+        CMDS[commands.py 斜杠命令]
     end
-    subgraph 核心
-        CORE_CONTEXT
-        CORE_ENGINE
-        CORE_PARSER
+    subgraph CORE[core/ 核心层]
+        ENG[engine.py 主循环]
+        CTX[context.py 上下文]
+        PARSER[parser.py 解析]
+        SESS[session.py 会话存档]
     end
-    subgraph 模型
-        LLM
+    subgraph LLM[llm/ 模型层]
+        CLIENT[client.py openai 封装]
     end
-    subgraph 工具
-        TOOLS
-        EXEC
+    subgraph TOOLS[tools/ 工具层]
+        EXEC[executor.py 执行器]
+        TOOLIMPL[文件/命令/信息工具]
     end
-    CLI --> CORE_ENGINE
-    CORE_ENGINE --> CORE_CONTEXT
-    CORE_ENGINE --> CORE_PARSER
-    CORE_PARSER --> LLM
-    CORE_ENGINE --> EXEC
-    EXEC --> TOOLS
-    LOG -.-> CORE_CONTEXT
-    LOG -.-> CORE_ENGINE
-    CONFIG -.-> LOG
-    CONFIG -.-> LLM
-    CORE_CONTEXT -.-> SESSION[Session Store 会话存档]
-    SESSION -.-> CORE_CONTEXT
+    subgraph UTILS[utils/ config/ log/]
+        ERR[errors.py 重试退避]
+        REDACT[redact.py 脱敏]
+        CFG[env.py Settings 单例]
+        LOG[logger.py 日志]
+    end
+    REPL --> ENG
+    CMDS --> REPL
+    ENG --> CTX
+    ENG --> PARSER
+    ENG --> EXEC
+    EXEC --> TOOLIMPL
+    PARSER --> CLIENT
+    CTX <-.-> SESS
+    CFG -.-> CLIENT
+    CFG -.-> LOG
+    ERR -.-> CLIENT
+    REDACT -.-> LOG
 ```
 
 ---
 
 ## 三、核心数据结构（仅 OpenAI 语义）
 
-全程只使用一套对齐 OpenAI `chat.completions` 协议的数据模型（**无 Anthropic 字段**），覆盖四种角色 `system / user / assistant / tool`，以及 `tool_calls`（调用请求）与 `tool`（回填结果）。
+全程使用一套对齐 OpenAI `chat.completions` 协议的数据模型，覆盖四种角色 `system / user / assistant / tool`，以及 `tool_calls`（调用请求）与 `tool`（回填结果）。
 
 - `Message`：统一消息载体，按角色区分内容、工具调用列表、工具回填 ID 等。
 - `ToolCall`：一次工具调用请求（包含调用 id、工具名、已解析的参数）。
@@ -114,33 +114,30 @@ flowchart LR
 ## 四、各层架构与实现细化
 
 ### 4.1 CLI 交互层 `cyent/cli/`
-- **REPL 循环**：读取用户输入 → 交给引擎 → 流式打印 assistant 正文；提示符显示当前模型名。
-- **斜杠命令**：提供若干控制命令（如帮助、退出、切换模型、清空上下文、查看日志）。
-- **用户中断**：支持 `Ctrl+C` 中断**当前一轮** agent loop 且不崩溃，便于回到提示符继续交互。
-- 参考 OpenCode 的 tui 设计：**交互与引擎解耦**——引擎对外发布一组**事件流**（如文本增量、工具开始、工具结果、完成、错误），CLI 仅负责消费并渲染这些事件，不直接参与引擎逻辑。
+- **REPL 循环**（`repl.py`）：读取输入 → 交给引擎 → 流式渲染；`Session` 在此组装全套组件（client/context/executor/engine/存档）。单任务模式（`-p`）复用同一套组装。
+- **斜杠命令**（`commands.py`）：注册表式设计（`SlashCommand` + `CommandRegistry`），内置 `/help` `/model` `/clear` `/tools` `/stats` `/sessions` `/resume` `/new` `/quit`，可注入扩展。
+- **用户中断**：`Ctrl+C` 中断当前一轮且不崩溃，回到提示符。
+- **交互与引擎解耦**：引擎发布事件流（text/thinking 增量、tool 开始/结果、final、error、interrupted），CLI 只消费渲染，不参与引擎逻辑。
 
 ### 4.2 配置层 `cyent/config/env.py`
-- 用 `python-dotenv` 从 `.env` 加载配置，并提供 `.env.example` 模板（不含真实密钥）。
-- 定义全局 `Settings`，集中管理端点、密钥、模型名、最大迭代次数、日志目录等运行参数。
-- **密钥脱敏**：配置载入时记录密钥，由统一的脱敏逻辑在日志与工具输出中替换为掩码。
-- 与 `.gitignore` 配合，确保密钥不进入版本库。
+- `python-dotenv` 从 `./.env` 加载，提供 `.env.example` 模板（不含真实密钥）。
+- 全局 `Settings` **单例**：`load()` 仅在入口调用一次，其余全部经 `Settings.get()` 读取。
+- **密钥脱敏**：载入时注册密钥，由统一脱敏逻辑在日志/工具输出/存档中替换为掩码；配合 `.gitignore` 确保密钥不进版本库。
 
 ### 4.3 日志层 `cyent/log/logger.py`
-- 选择标准 `logging` 或 `loguru`，输出到**控制台 + 轮转文件**。
-- 采用**分级日志**：调试（完整消息/工具入参出参）、信息（agent 循环事件、API 耗时）、警告（重试）、错误（异常）。
-- **敏感过滤**：注册日志过滤器，对密钥、鉴权 token 等进行脱敏后再输出，避免泄密。
+- 标准 `logging`，**只写轮转文件** `logs/cyent.log`（不写终端——REPL 拥有终端，日志会打断流式渲染）。
+- 分级：DEBUG（工具入参出参）/ INFO（循环事件、API 耗时）/ WARNING（重试）/ ERROR（异常）。
+- 日志过滤器对密钥脱敏后再落盘。
 
 ### 4.4 上下文管理层 `cyent/core/context.py`
-- **消息栈维护**：区分用户、助手、工具三类消息的追加，并保证 `assistant.tool_calls` 与其后续 `tool` 回填消息配对完整。
-- **System prompt 注入**：动态拼装角色定义、工具说明、工作目录与输出约定，可随轮次更新。
-- **Token 估算**：通过近似估算或模型返回的用量累计判断是否逼近上限。
-- **裁剪 / 压缩**：超限时优先丢弃最旧的成对对话（保持 tool 配对），保留最近轮次与系统提示；仍超限则对最旧段落做一次摘要并回填。
-- 参考 Claude Code 的上下文预算管理与 DeepSeek Harness 的"固定窗口 + 摘要"策略。
+- **消息栈维护**：区分用户/助手/工具三类消息的追加，保证 `tool_calls` 与 `tool` 回填配对完整；提供观察者订阅（会话存档挂钩于此）。
+- **Token 估算与预算**：近似估算判断是否逼近上限。
+- **压缩策略（summarize 优先）**：超限时优先对旧历史做摘要回填（保留信息），仅必要时才丢弃最旧轮次兑底；任何压缩均不破坏配对。
 
 ### 4.5 模型客户端层 `cyent/llm/client.py`
 - 仅封装 `openai` SDK（端点与密钥来自 `.env`），对外提供**流式**与**非流式**两种对话入口。
-- 流式模式既要把文本增量逐段暴露给 CLI 展示，也要把被切分的 `tool_calls` 增量**按下标合并**成完整的调用，再交给解析层处理。
-- **不做多厂商中枢**：因仅处理 OpenAI 格式，直接透传 messages / tools，无需构建多厂商适配转换层，降低复杂度与出错面。
+- 流式模式同时暴露文本增量（供 CLI 实时渲染）与工具调用增量（合并成完整调用后交解析层）。
+- **单一协议直连**：仅处理 OpenAI 格式，直接透传 messages / tools。
 
 ### 4.6 输出解析层 `cyent/core/parser.py`
 - 从 OpenAI 返回中提取原生 `tool_calls`：调用 id、工具名与参数字符串，并解析为参数对象。
@@ -165,14 +162,13 @@ flowchart LR
 - **安全约束**：命令默认限制在项目工作目录内；危险操作需显式开关；文件类工具遵循路径白名单，防止越权读取工作目录之外路径；输出经脱敏过滤密钥。
 
 ### 4.9 主循环层 `cyent/core/engine.py`
-**核心逻辑之一**，采用 ReAct 式的 think → act → observe 循环：调用模型 → 若模型返回工具调用则在本地执行并把结果作为观察回填后再进入下一轮；若无工具调用则视为完成，输出最终答复并退出。
+ReAct 式 think → act → observe：调用模型 → 有工具调用则本地执行并回填观察 → 下一轮；无工具调用即最终答复。引擎以生成器发布**事件流**（text/thinking 增量、tool 开始/结果、final、error、interrupted），CLI 只消费渲染。
 
-**终止条件（任一满足即退）：**
-1. 达到最大迭代次数（防死循环）；
-2. 本轮无工具调用（模型直接给出文本答复）；
-3. 用户中断（由 CLI 层注入）；
-4. 连续多轮无实质进展（工具结果重复／失败）→ 自动降级并汇总；
-5. 显式退出／结束标记。
+**终止条件（任一满足即退，无迭代上限）：**
+1. 本轮无工具调用（模型给出文本答复）；
+2. 用户中断（Ctrl+C，由 CLI 注入）；
+3. 连续多轮无实质进展（工具结果重复/失败）→ 自动降级并要求模型总结；
+4. 不可恢复错误（鉴权失败、摘要后仍超长等）。
 
 ### 4.10 错误处理层 `cyent/utils/errors.py`
 - **限流 / 网络错误**：指数退避 + 抖动重试（限次）。
@@ -181,74 +177,18 @@ flowchart LR
 - **工具参数非法 / 执行崩溃 / 超时**：转为可读错误文本回填给模型，不中断循环。
 - **解析失败**：附格式修正提示，限次重试。
 
-### 4.11 会话持久化层 `cyent/core/session.py`（M8，未实现）
+### 4.11 会话持久化层 `cyent/core/session.py`
 
-**目标**：把一次会话的完整消息历史（含工具调用配对）保存到磁盘，下次启动可恢复继续，跨进程延续对话上下文。
+**目标**：完整消息历史落盘，下次启动可恢复继续。存档为冷存储（全量），上下文为热窗口（预算内），互不替代。
 
-**存档格式（JSON Lines，每行一个独立 JSON 文档）**：
+**设计要点**：
+1. **JSONL 追加写**：一条消息一行，崩溃最多丢最后一行；meta 与消息行分离。
+2. **配对完整性是恢复红线**：加载时校验配对，损坏部分截断到最近合法边界，绝不带坏历史调 API。
+3. **system prompt 不入档**：加载时按当前环境重渲染。
+4. **脱敏前置**：写盘前过 `redact()`，存档不落密钥。
+5. **观察者挂钩**：存档订阅上下文的追加事件，引擎/客户端零改动。
 
-```jsonc
-// .cyent/sessions/<id>.jsonl  —— 首行 meta，后续每行一条消息
-{"type": "meta", "version": 1, "id": "20260830-143025-a1b2", "model": "glm-5.3-flash",
- "workdir": "E:\\Code\\Cyent", "created_at": "...", "updated_at": "..."}
-{"type": "message", "role": "user", "content": "统计 src 下 Python 行数"}
-{"type": "message", "role": "assistant", "content": null, "tool_calls": [...]}
-{"type": "message", "role": "tool", "tool_call_id": "call_x", "content": "…"}
-```
-
-**关键设计决策**：
-
-1. **复用既有序列化**：消息行直接用 `Message.to_openai()` 的输出（`from_openai` 可逆），不发明第二套格式——序列化正确性已被现有测试覆盖。
-2. **JSONL 而非单个 JSON**：追加写一行即可持久化一条消息，无需重写整个文件；进程崩溃时最多丢最后一行，天然抗损坏。
-3. **原子写**：每行 append 前 flush + fsync；meta 行的 `updated_at` 更新走"写临时文件 + os.replace"原子替换，避免半写状态。
-4. **配对完整性是恢复红线**：加载时逐行校验 `assistant.tool_calls` 与 `tool` 回填的配对（复用 `assert_pairing_valid` 思路）；损坏/断链的行**丢弃到最近合法边界**并警告，绝不带着坏历史调 API（否则 400）。
-5. **system prompt 不入档**：system prompt 由 `build_system_prompt()` 在加载时按当前环境重新渲染（workdir/平台可能已变化），存档只保留对话历史。
-6. **脱敏前置**：写盘前对消息内容过 `redact()`，存档本身不落密钥；与日志同一套注册表。
-7. **存档目录**：`Settings.workdir / ".cyent" / "sessions/"`，随项目走（换 workdir 即换会话空间）；目录加入工具层 `IGNORE_DIRS`，避免 `search_text`/`project_tree` 扫到存档。
-8. **版本字段**：meta 行带 `version`，未来格式变更时加载器可按版本迁移或明确拒绝。
-
-**对外接口（草案）**：
-
-```python
-class SessionStore:
-    def __init__(self, workdir: Path, secrets: list[str]) -> None: ...
-    def start(self, model: str) -> SessionArchive: ...          # 新建存档（写 meta 行）
-    def append(self, message: Message) -> None: ...             # 追加一条消息（脱敏后写盘）
-    def flush_meta(self) -> None: ...                           # 原子更新 updated_at/model
-    def load(self, session_id: str) -> list[Message]: ...       # 加载 + 配对校验 + 损坏截断
-    def list_sessions(self) -> list[SessionInfo]: ...           # 列出可恢复会话（id/model/时间/消息数）
-    def latest(self) -> SessionInfo | None: ...                 # 最近一次会话（--continue 用）
-
-# Message 需补两个方法（types.py）：
-def to_archive(self) -> dict: ...        # = to_openai() + {"type": "message"}
-@classmethod
-def from_archive(cls, line: dict) -> Message: ...  # = from_openai() 的别名封装
-```
-
-**CLI 集成（斜杠命令 + 启动参数）**：
-
-| 入口 | 行为 |
-| ---- | ---- |
-| `cyent --continue` / `-c` | 加载最近会话继续 |
-| `cyent --resume <ID>` | 加载指定会话 |
-| `cyent --list-sessions` | 列出可恢复会话后退出 |
-| `/sessions` | REPL 内列出会话 |
-| `/resume <ID>` | REPL 内切换到指定会话 |
-| `/new` | 开新会话（当前会话封盘） |
-
-**写入时机**：`ContextManager.add_*` 返回消息后由 REPL/引擎侧调用 `store.append()`（观察者式挂钩，`ContextManager` 本身不感知存档，保持单一职责）；`/clear` 不删档，仅开新档。
-
-**与既有机制的关系**：
-- **不替代 trim/summarize**：存档保存**全量**历史；恢复时全量载入后由 `ContextManager` 的预算机制自行裁剪——存档是"冷存储"，上下文是"热窗口"。
-- **不替代日志**：日志面向调试（含异常栈），存档面向对话延续；两者都脱敏。
-- **Engine/LLMClient 零改动**：持久化完全在 ContextManager 外围挂钩，符合"交互与引擎解耦"原则。
-
-**验收标准（M8）**：
-1. 对话若干轮后退出，`cyent --continue` 能恢复全部历史并继续对话（模型能引用早前上下文）；
-2. 存档文件中不出现 API key（脱敏生效）；
-3. 人为截断/损坏存档最后一行，加载不崩溃，丢弃损坏行并警告；
-4. 恢复后 trim/summarize 照常工作（长会话恢复后仍不爆上下文）；
-5. `/sessions`、`/resume`、`/new` 命令可用，`--list-sessions` 输出 id/model/时间/消息数。
+**CLI 集成**：`cyent -c/--continue`（恢复最近）、`--resume <ID>`、`--list-sessions`；REPL 内 `/sessions` `/resume` `/new`。`/clear` 不删档，仅开新档。
 
 ---
 
@@ -260,65 +200,7 @@ def from_archive(cls, line: dict) -> Message: ...  # = from_openai() 的别名�
 
 ---
 
-## 六、目录结构
-
-```
-Cyent/                         # 项目根
-├── README.txt                 # 提交物：≤1000 汉字说明
-├── Design.md                  # 本设计文档
-├── pyproject.toml             # uv 管理；name = "cyent"
-├── uv.lock                    # uv 锁定文件
-├── .env.example               # 配置模板（不含真实 key）
-├── .gitignore                 # 忽略 .env / logs / __pycache__
-├── src/cyent/
-│   ├── __init__.py
-│   ├── main.py                # CLI 入口（`cyent` 命令）
-│   ├── cli/
-│   │   └── repl.py            # REPL + 斜杠命令 + 事件渲染
-│   ├── config/
-│   │   └── env.py             # .env 加载 + Settings + 脱敏
-│   ├── log/
-│   │   └── logger.py          # 日志初始化 + redact filter
-│   ├── core/
-│   │   ├── types.py           # Message/ToolCall/ToolSchema/ChatResult
-│   │   ├── context.py         # 对话与上下文管理
-│   │   ├── parser.py          # OpenAI 输出解析
-│   │   ├── engine.py          # 主循环与终止条件
-│   │   └── session.py         # 会话持久化（M8，未实现）
-│   ├── llm/
-│   │   └── client.py          # openai SDK 封装
-│   ├── tools/
-│   │   ├── base.py            # BaseTool
-│   │   ├── file_tools.py      # 文件读写搜索
-│   │   ├── command_tools.py   # 本地命令执行
-│   │   ├── info_tools.py      # 环境/目录信息
-│   │   └── executor.py        # 注册 + 校验 + 分发 + 隔离
-│   └── utils/
-│       ├── errors.py          # 异常类型与重试退避
-│       └── redact.py          # 敏感信息过滤
-├── tests/                     # 单元测试
-├── logs/                      # 运行时日志（gitignore）
-└── .cyent/sessions/           # 会话存档（M8，gitignore）
-```
-
----
-
-## 八、实现路线图（Milestone）
-
-| 阶段 | 内容                                           | 验收                              |
-| ---- | ---------------------------------------------- | --------------------------------- |
-| M1   | `uv init` + 类型 + `client.py` + `.env`/日志   | 能发起一次对话拿到回复            |
-| M2   | `parser.py` 解析 OpenAI tool_calls + JSON 容错 | 能解析模型工具调用                |
-| M3   | `tools/`（文件+命令+信息）+ `executor.py`      | 能本地读写文件、执行命令          |
-| M4   | `engine.py` 主循环 + 终止条件                  | 能"看问题→改文件→跑命令→结论"闭环 |
-| M5   | `context.py` token/裁剪/摘要                   | 长任务不爆上下文                  |
-| M6   | `errors.py` 重试 + `redact` 脱敏               | 网络抖动恢复，key 不泄漏          |
-| M7   | CLI 打磨 + 演示脚本 + README/视频              | 跑通真实任务，录制视频            |
-| M8   | `session.py` 会话持久化 + `--continue`/`--resume` + `/sessions` `/resume` `/new` | 退出后可恢复继续对话（设计见 4.11，未实现） |
-
----
-
-## 九、设计自检
+## 六、设计自检
 
 | 要求/红线                     | 本设计如何满足                                               |
 | ----------------------------- | ------------------------------------------------------------ |
@@ -336,7 +218,7 @@ Cyent/                         # 项目根
 | 需要日志                      | `log/logger.py`（分级 + 轮转 + 脱敏）                        |
 | 项目名 `Cyent`                | 包名 `cyent`                                                 |
 | Python 3.14                   | `requires-python=">=3.14"`                                   |
-| 会话持久化（M8）              | `core/session.py` JSONL 存档 + 配对校验 + 脱敏（见 4.11）    |
+| 会话持久化            | `core/session.py` JSONL 存档 + 配对校验 + 脱敏（见 4.11）    |
 | API Key 不落仓库/README/视频  | `.gitignore` + `.env` + 全链路 `redact`                      |
 
 ---

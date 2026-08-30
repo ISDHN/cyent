@@ -6,9 +6,9 @@ message (``Message.to_archive``). Appends are flushed + fsynced per line;
 the file is created lazily on first append (empty sessions leave nothing).
 
 Loading validates the ``tool_calls`` ↔ ``tool`` pairing and truncates at
-the first inconsistency, so a corrupted tail never reaches the API.
-Contents are redacted before hitting the disk; the system prompt is NOT
-archived (re-rendered from the current environment on load).
+the first inconsistency, so a corrupted tail stays off the API. Contents
+are redacted before hitting the disk; the system prompt is NOT archived
+(it is re-rendered from the current environment on load).
 """
 
 import json
@@ -96,7 +96,7 @@ class SessionStore:
     """Creates, appends to, and loads session archives.
 
     Configuration (workdir, registered secrets) comes from the Settings
-    singleton — no constructor parameters.
+    singleton.
     """
 
     def __init__(self) -> None:
@@ -113,7 +113,7 @@ class SessionStore:
     def start(self, model: str) -> str:
         """Arm a fresh archive; the file is created lazily on first append.
 
-        Empty sessions (no interaction) leave nothing on disk.
+        Empty sessions leave nothing on disk.
         Returns the prospective id.
         """
         sid = new_session_id()
@@ -143,7 +143,7 @@ class SessionStore:
         """Append one message (redacted) to the active archive.
 
         The archive file is created on the first append (meta header first),
-        so sessions with no interaction never touch the disk.
+        so empty sessions stay off the disk.
         """
         if self._path is None:
             raise RuntimeError("no active session archive (start/adopt first)")

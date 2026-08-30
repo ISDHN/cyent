@@ -1,6 +1,5 @@
 """BaseTool — declaration + local implementation for every tool."""
 
-
 import abc
 import json
 from typing import Any
@@ -12,8 +11,8 @@ class BaseTool(abc.ABC):
     """A tool = OpenAI function schema + a local ``run`` implementation.
 
     ``run`` must return a *string* observation that will be fed back to the
-    model. It must never raise past the executor (executor catches, but keep
-    implementations defensive anyway).
+    model. Implementations stay defensive: the executor isolates crashes,
+    but a clean error string is the preferred outcome.
     """
 
     name: str = ""

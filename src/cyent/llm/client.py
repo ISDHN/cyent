@@ -130,7 +130,7 @@ class LLMClient:
 
                 # reasoning delta (OpenAI-compatible reasoning models expose
                 # it as delta.reasoning_content / delta.reasoning); streamed
-                # separately so the CLI can dim it. Not kept in the message.
+                # separately so the CLI can dim it, and dropped from the message.
                 reasoning_text = getattr(delta, "reasoning_content", None) or getattr(
                     delta, "reasoning", None
                 )

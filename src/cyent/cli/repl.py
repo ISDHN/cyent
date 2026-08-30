@@ -1,10 +1,8 @@
 """REPL — interactive loop, slash commands, event rendering, Ctrl+C handling.
 
-The CLI only consumes EngineEvents published by the engine; it never touches
-engine internals (interaction/engine decoupling, per the design doc).
-
-Slash commands live in ``commands.py``; the system prompt lives in
-``prompts.py``.
+The CLI consumes EngineEvents published by the engine (interaction/engine
+decoupling). Slash commands live in ``commands.py``; the system prompt
+lives in ``prompts.py``.
 """
 
 import logging
@@ -82,7 +80,7 @@ class Session:
             self.client,
             self.context,
             self.executor,
-            EngineConfig(stream=stream),  # no iteration cap; termination via events
+            EngineConfig(stream=stream),  # terminates via events
         )
 
         # Session archive: resume an existing one or start fresh. The store

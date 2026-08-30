@@ -1,9 +1,9 @@
 """Error types and retry/backoff helpers (exponential backoff with jitter).
 
 Every Cyent error carries its own retry policy as a class attribute
-(``retryable``), so callers never need an isinstance-based classifier.
-OpenAI SDK exceptions are wrapped into Cyent errors at the client boundary
-(``wrap_openai_error``); the rest of the codebase only ever sees Cyent types.
+(``retryable``), so callers need no isinstance-based classifier. OpenAI SDK
+exceptions are wrapped into Cyent errors at the client boundary
+(``wrap_openai_error``); the rest of the codebase only sees Cyent types.
 """
 
 import logging

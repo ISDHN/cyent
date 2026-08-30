@@ -1,7 +1,7 @@
 """Tool executor: registry, validation, dispatch, isolation.
 
-Exceptions never propagate to the engine — they become readable observation
-text. Outputs are redacted before being returned.
+Exceptions become readable observation text for the model; outputs are
+redacted before being returned.
 """
 
 import logging

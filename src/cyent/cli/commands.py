@@ -1,8 +1,7 @@
 """Slash command framework and built-in commands.
 
-Extensible: register additional ``SlashCommand`` instances on the registry
-(or pass a custom registry to ``Repl``/``launch``) without touching the
-REPL loop.
+Extensible: register additional ``SlashCommand`` instances on the registry,
+or pass a custom registry to ``Repl``/``launch``.
 """
 
 from collections.abc import Callable

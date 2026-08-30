@@ -2,7 +2,7 @@
 
 Core invariant: every ``assistant`` message carrying ``tool_calls`` must be
 followed by exactly one ``tool`` result message per call id, in order.
-Trimming and summarization must never break this pairing (OpenAI returns 400
+Trimming and summarization preserve this pairing (OpenAI returns 400
 otherwise).
 """
 
@@ -49,7 +49,7 @@ class ContextManager:
         for observer in self._on_append:
             try:
                 observer(message)
-            except Exception:  # noqa: BLE001 — persistence must not kill runs
+            except Exception:  # noqa: BLE001 — observers are isolated by design
                 log.exception("context observer failed")
 
     # Appends (pairing-safe)
@@ -80,7 +80,7 @@ class ContextManager:
         return list(self._messages)
 
     def restore(self, messages: list[Message]) -> None:
-        """Replace history (no broadcast: archives already hold these)."""
+        """Replace history silently — archives already hold these messages."""
         self._messages = list(messages)
 
     def messages_for_api(self) -> list[Message]:
@@ -112,24 +112,21 @@ class ContextManager:
     def trim(self) -> int:
         """Drop the oldest complete user/assistant/tool rounds.
 
-        Pairing rule: never drop an assistant-with-tool_calls without also
-        dropping its tool results, and never start the kept history with a
-        dangling ``tool`` message. Returns the number of messages dropped.
+        Pairing rule: an assistant-with-tool_calls is dropped together with
+        its tool results, and the kept history never starts with a dangling
+        ``tool`` message. Returns the number of messages dropped.
         """
         before = len(self._messages)
         target = self._budget - RESERVE_FOR_REPLY
 
         while self.approx_tokens() > target and len(self._messages) > 2:
-            # find the end of the first complete "round": from the first
-            # message up to (and including) the last tool result of the first
-            # assistant-with-tool_calls block (or just that single message if
-            # it is a plain user/assistant text message).
+            # end of the first complete "round": the first message up to (and
+            # including) the tool results of the first assistant-with-tool_calls
+            # block, or just that single plain user/assistant message
             drop_until = self._first_round_end()
             if drop_until <= 0:
                 break
-            # Safety: if dropping this round would leave nothing (or leave a
-            # single message that still exceeds the budget), stop trimming and
-            # let summarize() handle the compression instead.
+            # keep at least two messages; deeper compression is summarize()'s job
             if len(self._messages) - drop_until < 2:
                 break
             del self._messages[:drop_until]
@@ -157,11 +154,10 @@ class ContextManager:
         return 0
 
     def _ensure_no_dangling_tool(self) -> None:
-        """Drop leading tool messages that lost their assistant partner."""
+        """Drop leading tool messages whose assistant partner is gone."""
         while self._messages and self._messages[0].role == "tool":
             del self._messages[0]
 
-    # ------------------------------------------------------------------ #
     def summarize(self) -> bool:
         """Replace the oldest half of the history with a compact summary.
 
@@ -173,9 +169,7 @@ class ContextManager:
         while len(self._messages) >= 4 and self.over_budget():
             keep_from = self._safe_split_point(len(self._messages) // 2)
             if keep_from <= 1:
-                # Nothing safely splittable (the front is one tool block);
-                # re-summarizing would not shrink anything — stop and let
-                # trim() handle the rest.
+                # the front is one unsplittable tool block; trim() takes over
                 break
             old = self._messages[:keep_from]
             kept = self._messages[keep_from:]

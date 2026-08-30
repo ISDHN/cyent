@@ -1,8 +1,7 @@
 """Core data structures aligned with the OpenAI ``chat.completions`` protocol.
 
 Only OpenAI semantics are modeled here (roles: system/user/assistant/tool,
-``tool_calls`` requests and ``tool`` result messages). There is deliberately
-no Anthropic branch anywhere in this project.
+``tool_calls`` requests and ``tool`` result messages).
 """
 
 import json

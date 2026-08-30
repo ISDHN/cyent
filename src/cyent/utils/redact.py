@@ -1,9 +1,7 @@
 """Sensitive-data redaction shared by logs, tool outputs and error messages.
 
-Registry-based only: secrets must be explicitly registered (via
-``SecretRegistry.register`` or ``Settings.register_secret``) before they are
-masked. No shape-guessing regexes — a value is redacted if and only if it was
-declared sensitive.
+Registry-based: a value is masked if and only if it was registered
+(``SecretRegistry.register`` / ``Settings.register_secret``).
 """
 
 from typing import Iterable
