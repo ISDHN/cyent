@@ -26,11 +26,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    workdir = Path(args.workdir).resolve() if args.workdir else Path.cwd().resolve()
-
     from cyent.config.env import Settings
     from cyent.log.logger import init_logging
 
+    workdir = Path(args.workdir).resolve() if args.workdir else Path.cwd().resolve()
     Settings.load(workdir=workdir)
     init_logging()
 

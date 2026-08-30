@@ -5,7 +5,6 @@ Only OpenAI semantics are modeled here (roles: system/user/assistant/tool,
 no Anthropic branch anywhere in this project.
 """
 
-
 import json
 from dataclasses import dataclass, field
 from typing import Any, Literal

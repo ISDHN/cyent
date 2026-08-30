@@ -6,9 +6,8 @@ Trimming and summarization must never break this pairing (OpenAI returns 400
 otherwise).
 """
 
-
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from cyent.core.types import Message
 

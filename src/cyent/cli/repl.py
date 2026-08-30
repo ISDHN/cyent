@@ -9,12 +9,10 @@ Slash commands live in ``commands.py``; the system prompt lives in
 
 import logging
 import sys
-from pathlib import Path
 from typing import TextIO
-import platform
 
 from cyent.cli.commands import CommandRegistry, default_commands
-from cyent.cli.prompts import SYSTEM_PROMPT_TEMPLATE
+from cyent.cli.prompts import build_system_prompt
 from cyent.config.env import Settings
 from cyent.core.context import ContextManager
 from cyent.core.engine import (
@@ -70,7 +68,7 @@ class Session:
             raise ConfigError("\n".join(problems))
 
         self.client = LLMClient()
-        self.context = ContextManager(system_prompt=self.build_system_prompt())
+        self.context = ContextManager(system_prompt=build_system_prompt())
         self.executor = ToolExecutor(
             build_file_tools(settings.workdir)
             + build_info_tools(settings.workdir)
@@ -82,14 +80,6 @@ class Session:
             self.context,
             self.executor,
             EngineConfig(stream=stream),  # no iteration cap; termination via events
-        )
-
-    @staticmethod
-    def build_system_prompt() -> str:
-        settings = Settings.get()
-        return SYSTEM_PROMPT_TEMPLATE.format(
-            workdir=settings.workdir,
-            platform=f"{platform.system()} {platform.release()}",
         )
 
 
@@ -233,11 +223,6 @@ class Repl:
         self.renderer = EventRenderer(self.engine)
         # Slash commands: default set, or a custom registry for extension.
         self.commands = commands or CommandRegistry(default_commands())
-
-    # ------------------------------------------------------------------ #
-    @staticmethod
-    def _build_system_prompt(settings: Settings) -> str:
-        return Session.build_system_prompt(settings)
 
     # ------------------------------------------------------------------ #
     # Main loop

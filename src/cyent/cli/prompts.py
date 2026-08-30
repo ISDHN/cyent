@@ -4,6 +4,10 @@ Kept separate from the REPL so the prompt can be reviewed, edited, or
 replaced (e.g. loaded from a file) without touching CLI logic.
 """
 
+import platform
+
+from cyent.config.env import Settings
+
 SYSTEM_PROMPT_TEMPLATE = """\
 # Role
 
@@ -85,3 +89,12 @@ Rules of engagement:
 - Never fabricate tool output, file contents, or command results. If
   information is missing, gather it with tools or say you don't know.
 """
+
+
+def build_system_prompt() -> str:
+    """Render SYSTEM_PROMPT_TEMPLATE with the current settings."""
+    settings = Settings.get()
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        workdir=settings.workdir,
+        platform=f"{platform.system()} {platform.release()}",
+    )

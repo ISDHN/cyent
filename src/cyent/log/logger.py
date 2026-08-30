@@ -16,10 +16,7 @@ from cyent.config.env import Settings
 class RedactFilter(logging.Filter):
     """Mask registered secrets in every emitted record."""
 
-    def __init__(self) -> None:
-        super().__init__()
-
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+    def filter(self, record: logging.LogRecord) -> bool:
         try:
             msg = record.getMessage()
             record.msg = Settings.get().redact(msg)
@@ -53,7 +50,7 @@ def init_logging() -> logging.Logger:
         )
         file_handler.setLevel(logging.DEBUG)  # file always keeps full detail
         file_handler.setFormatter(fmt)
-        file_handler.addFilter(RedactFilter(settings))
+        file_handler.addFilter(RedactFilter())
         logger.addHandler(file_handler)
     except OSError:
         # No file handler available; keep logs in memory (NullHandler) so the

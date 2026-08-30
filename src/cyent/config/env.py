@@ -8,6 +8,7 @@ settings parameter threading through constructors.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 from dotenv import load_dotenv
 
 from cyent.utils.redact import SecretRegistry
@@ -15,7 +16,7 @@ from cyent.utils.redact import SecretRegistry
 ENV_FILE = Path(".env")
 
 
-@dataclass(slots=True)
+@dataclass
 class Settings:
     """Global runtime configuration, loaded from ``./.env``."""
 
@@ -26,7 +27,7 @@ class Settings:
     log_dir: Path = field(default_factory=lambda: Path("logs"))
     workdir: Path = field(default_factory=Path.cwd)
     _secret_registry: SecretRegistry = field(default_factory=SecretRegistry)
-    _instance: Settings | None = None
+    _instance: ClassVar[Settings | None] = None
 
     def __post_init__(self) -> None:
         self.register_secret(self.api_key)

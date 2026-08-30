@@ -9,10 +9,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from cyent.cli.prompts import build_system_prompt
 from cyent.core.context import ContextManager
 
-if TYPE_CHECKING:
-    from cyent.cli.repl import Repl, Session
+if TYPE_CHECKING:  # annotations only; runtime import would be circular
+    from cyent.cli.repl import Repl
 
 
 @dataclass(slots=True)
@@ -28,7 +29,7 @@ class SlashCommand:
     description: str
     usage: str = ""
     hidden: bool = False
-    handler: Callable[["Repl", str], bool] = lambda repl, arg: False
+    handler: Callable[[Repl, str], bool] = lambda repl, arg: False
 
     @property
     def primary(self) -> str:
@@ -67,7 +68,7 @@ class CommandRegistry:
                 out.append(cmd)
         return out
 
-    def dispatch(self, repl: "Repl", line: str) -> bool:
+    def dispatch(self, repl: Repl, line: str) -> bool:
         """Execute ``line`` (a '/...' command). Returns True to exit REPL."""
         parts = line.split(maxsplit=1)
         cmd = parts[0].lower()
@@ -91,16 +92,16 @@ class CommandRegistry:
 # --------------------------------------------------------------------------- #
 # Built-in command handlers
 # --------------------------------------------------------------------------- #
-def _cmd_help(repl: "Repl", arg: str) -> bool:
+def _cmd_help(repl: Repl, arg: str) -> bool:
     print(repl.commands.help_text())
     return False
 
 
-def _cmd_quit(repl: "Repl", arg: str) -> bool:
+def _cmd_quit(repl: Repl, arg: str) -> bool:
     return True
 
 
-def _cmd_model(repl: "Repl", arg: str) -> bool:
+def _cmd_model(repl: Repl, arg: str) -> bool:
     if arg:
         repl.settings.model = arg
         print(f"model switched to {arg}")
@@ -109,16 +110,14 @@ def _cmd_model(repl: "Repl", arg: str) -> bool:
     return False
 
 
-def _cmd_clear(repl: "Repl", arg: str) -> bool:
-    repl.context = ContextManager(
-        system_prompt=Session.build_system_prompt(repl.settings)
-    )
+def _cmd_clear(repl: Repl, arg: str) -> bool:
+    repl.context = ContextManager(system_prompt=build_system_prompt())
     repl.engine.context = repl.context
     print("context cleared.")
     return False
 
 
-def _cmd_tools(repl: "Repl", arg: str) -> bool:
+def _cmd_tools(repl: Repl, arg: str) -> bool:
     for name in repl.executor.tool_names:
         tool = repl.executor.get(name)
         desc = (tool.description or "").splitlines()[0] if tool else ""
@@ -126,7 +125,7 @@ def _cmd_tools(repl: "Repl", arg: str) -> bool:
     return False
 
 
-def _cmd_stats(repl: "Repl", arg: str) -> bool:
+def _cmd_stats(repl: Repl, arg: str) -> bool:
     st = repl.context.stats_snapshot()
     es = repl.engine.stats
     print(

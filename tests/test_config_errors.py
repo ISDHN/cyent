@@ -70,13 +70,17 @@ def test_settings_register_secret():
 
 
 def test_redact_filter_masks_records():
-    s = Settings(api_key="sk-abcdef1234567890")
-    f = RedactFilter(s)
-    rec = logging.LogRecord(
-        "t", logging.INFO, "f", 1, "key is sk-abcdef1234567890", None, None
-    )
-    assert f.filter(rec) is True
-    assert "sk-abcdef1234567890" not in rec.getMessage()
+    # RedactFilter reads the Settings singleton; install one for the test.
+    Settings._instance = Settings(api_key="sk-abcdef1234567890")
+    try:
+        f = RedactFilter()
+        rec = logging.LogRecord(
+            "t", logging.INFO, "f", 1, "key is sk-abcdef1234567890", None, None
+        )
+        assert f.filter(rec) is True
+        assert "sk-abcdef1234567890" not in rec.getMessage()
+    finally:
+        Settings._instance = None
 
 
 # ---- retry ---- #
