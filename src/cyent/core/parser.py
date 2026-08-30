@@ -1,14 +1,9 @@
 """Output parser — extract and repair OpenAI-format tool_calls.
 
-Responsibilities:
-- Pull native ``tool_calls`` (id / name / arguments string) out of an
-  assistant message and parse arguments into objects.
-- Multi-level JSON repair: strip code fences, fix quotes/trailing commas,
-  extract the outermost JSON fragment.
-- Separate coexisting text content and tool calls in one assistant message.
-- No Anthropic handling (``tool_use`` / ``tool_result``) by design.
+Pulls native ``tool_calls`` out of an assistant message and parses the
+argument JSON, with multi-level repair (code fences, quotes, trailing
+commas, outermost-fragment extraction). No Anthropic handling by design.
 """
-
 
 import json
 import logging
@@ -20,31 +15,24 @@ from cyent.core.types import ChatResult, ToolCall
 
 log = logging.getLogger("cyent.parser")
 
-# How many times we allow the model to fix malformed tool arguments.
-MAX_REPAIR_ATTEMPTS = 2
-
 _FENCE_RE = re.compile(r"```(?:json|JSON)?\s*(.*?)```", re.DOTALL)
 
 
 @dataclass(slots=True)
 class ParsedResponse:
-    """Result of parsing one assistant response."""
+    """Parsed assistant response: text + tool calls (+ parse errors)."""
 
-    text: str = ""  # plain content (may be empty)
+    text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
-    # tool_call_id -> error text, for calls whose arguments could not be parsed
-    parse_errors: dict[str, str] = field(default_factory=dict)
+    parse_errors: dict[str, str] = field(default_factory=dict)  # id -> error
 
     @property
     def has_tool_calls(self) -> bool:
         return bool(self.tool_calls)
 
 
-# --------------------------------------------------------------------------- #
-# JSON repair helpers
-# --------------------------------------------------------------------------- #
 def _strip_code_fences(text: str) -> str:
-    """If the payload is wrapped in ```json ...```, unwrap it."""
+    """Unwrap ```json ...``` fences."""
     m = _FENCE_RE.search(text)
     if m:
         return m.group(1).strip()
@@ -56,7 +44,7 @@ def _fix_trailing_commas(text: str) -> str:
 
 
 def _fix_smart_quotes(text: str) -> str:
-    """Replace curly quotes that sometimes leak from models."""
+    """Replace curly quotes that leak from models."""
     return (
         text.replace("\u201c", '"')
         .replace("\u201d", '"')
@@ -96,11 +84,10 @@ def _extract_outermost_json(text: str) -> str | None:
 
 
 def parse_json_lenient(raw: str) -> dict[str, Any] | list[Any] | None:
-    """Try hard to parse a JSON object/array from ``raw``.
+    """Parse a JSON object/array, trying escalating repairs.
 
-    Levels: direct parse -> strip fences -> fix quotes/commas -> extract
-    outermost fragment -> single-quote to double-quote fallback.
-    Returns None when every level fails.
+    Levels: direct -> strip fences -> fix quotes/commas -> extract
+    outermost fragment -> single-to-double quotes. None when all fail.
     """
     if not raw or not raw.strip():
         return None
@@ -138,14 +125,10 @@ def parse_tool_arguments(raw: str) -> tuple[dict[str, Any] | None, str | None]:
     if obj is None:
         return None, f"Arguments are not valid JSON: {raw[:200]!r}"
     if isinstance(obj, list):
-        # tolerate a bare list by wrapping positionally? No — reject clearly.
         return None, "Arguments must be a JSON object, not an array."
     return obj, None
 
 
-# --------------------------------------------------------------------------- #
-# Response parsing
-# --------------------------------------------------------------------------- #
 def parse_response(result: ChatResult) -> ParsedResponse:
     """Split one ChatResult into text + parsed tool calls (+ parse errors)."""
     msg = result.message
@@ -158,8 +141,7 @@ def parse_response(result: ChatResult) -> ParsedResponse:
                 "Tool call %s (%s) has invalid arguments: %s", tc.id, tc.name, err
             )
             parsed.parse_errors[tc.id] = err
-            # keep the call with empty args so pairing stays intact; the
-            # executor will surface the error observation to the model.
+            # keep the call (empty args) so pairing stays intact
             parsed.tool_calls.append(
                 ToolCall(
                     id=tc.id, name=tc.name, arguments={}, raw_arguments=tc.raw_arguments
@@ -185,7 +167,7 @@ def parse_response(result: ChatResult) -> ParsedResponse:
 
 
 def repair_hint(error_text: str) -> str:
-    """Observation text asking the model to re-emit valid JSON arguments."""
+    """Observation asking the model to re-emit valid JSON arguments."""
     return (
         "ERROR: your tool call arguments could not be parsed. "
         f"Parser said: {error_text}. "

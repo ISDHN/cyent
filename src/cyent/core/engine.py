@@ -1,45 +1,31 @@
 """Engine — the ReAct agent loop (think -> act -> observe).
 
-Calls the model; when the model returns tool_calls, executes them locally and
-feeds observations back for the next round; when no tool calls are returned,
-the loop finishes with the final answer.
-
-Termination conditions (any one ends the loop):
-1. max iterations reached;
-2. no tool calls in the response (final text answer);
-3. user interrupt (injected via ``request_interrupt``);
-4. no substantive progress for several rounds (repeated/failed tool results);
-5. explicit stop flag.
+Calls the model; tool_calls are executed locally and fed back as
+observations until the model answers without tools. The loop ends on a
+final answer, user interrupt, no-progress degradation, or error.
 """
-
 
 import logging
 import threading
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 from cyent.core.context import ContextManager
-from cyent.core.parser import (
-    MAX_REPAIR_ATTEMPTS,
-    ParsedResponse,
-    parse_response,
-    repair_hint,
-)
-from cyent.core.types import ChatResult, Message, ToolCall
-from cyent.llm.client import LLMClient, StreamEvent
+from cyent.core.parser import parse_response, repair_hint
+from cyent.core.types import ChatResult
+from cyent.llm.client import LLMClient
 from cyent.tools.executor import ToolExecutor
 from cyent.utils.errors import AuthError, ContextTooLongError, LLMError
 
 log = logging.getLogger("cyent.engine")
 
-# Rounds without progress before we degrade and summarize.
-NO_PROGRESS_LIMIT = 3
+NO_PROGRESS_LIMIT = 3  # stuck rounds before degrading to a summary
+MAX_REPAIR_ATTEMPTS = 2  # retries for malformed tool arguments
 
 
 class StopReason(str, Enum):
-    COMPLETED = "completed"  # model gave a final text answer
-    MAX_ITERATIONS = "max_iterations"
+    COMPLETED = "completed"
     INTERRUPTED = "interrupted"
     NO_PROGRESS = "no_progress"
     ERROR = "error"
@@ -71,8 +57,6 @@ class EngineEvent:
 
 @dataclass
 class EngineConfig:
-    # max_iterations removed: the loop runs until a termination condition
-    # (final answer / interrupt / no-progress / error) is met.
     temperature: float = 0.2
     stream: bool = True
     max_repair_attempts: int = MAX_REPAIR_ATTEMPTS
@@ -109,7 +93,7 @@ class Engine:
     # Public API
     # ------------------------------------------------------------------ #
     def request_interrupt(self) -> None:
-        """Called by the CLI (Ctrl+C handler) to abort the current run."""
+        """Abort the current run (Ctrl+C handler)."""
         self._interrupt.set()
 
     def reset_interrupt(self) -> None:
@@ -135,8 +119,6 @@ class Engine:
         repair_attempts = 0
         iteration = 0
 
-        # No iteration cap: the loop ends via final answer, user interrupt,
-        # no-progress degradation, or an unrecoverable error.
         while True:
             iteration += 1
             if self._interrupt.is_set():
@@ -149,51 +131,33 @@ class Engine:
             self.stats.rounds = iteration
             yield EngineEvent(type=EventType.ROUND_START, round=iteration)
 
-            # ---- think: call the model (with retry/trim handling) ------- #
+            # think: call the model (trim + retry once on context overflow)
             try:
-                for kind, text in self._call_model():
-                    if kind == "text":
-                        yield EngineEvent(type=EventType.TEXT_DELTA, text=text)
-                    else:
-                        yield EngineEvent(type=EventType.THINKING_DELTA, text=text)
+                yield from self._stream_deltas()
                 result = self._last_result
             except ContextTooLongError:
                 log.warning("Context too long; trimming and retrying")
                 self.context.trim()
                 try:
-                    for kind, text in self._call_model():
-                        event_type = (
-                            EventType.TEXT_DELTA
-                            if kind == "text"
-                            else EventType.THINKING_DELTA
-                        )
-                        yield EngineEvent(type=event_type, text=text)
+                    yield from self._stream_deltas()
                     result = self._last_result
                 except ContextTooLongError:
-                    self.stats.stop_reason = StopReason.ERROR
-                    yield EngineEvent(
-                        type=EventType.ERROR,
-                        text="Context still too long after trimming.",
-                    )
+                    yield from self._fail("Context still too long after trimming.")
                     return
             except AuthError as exc:
-                self.stats.stop_reason = StopReason.ERROR
-                yield EngineEvent(type=EventType.ERROR, text=str(exc))
+                yield from self._fail(str(exc))
                 return
             except LLMError as exc:
-                self.stats.stop_reason = StopReason.ERROR
-                yield EngineEvent(
-                    type=EventType.ERROR, text=f"Model call failed: {exc}"
-                )
+                yield from self._fail(f"Model call failed: {exc}")
                 return
 
             self.stats.prompt_tokens += result.usage.prompt_tokens
             self.stats.completion_tokens += result.usage.completion_tokens
 
-            # ---- parse -------------------------------------------------- #
+            # parse
             parsed = parse_response(result)
 
-            # ---- no tool calls => final answer -------------------------- #
+            # no tool calls => final answer
             if not parsed.has_tool_calls:
                 self.context.add_assistant(result.message)
                 self.stats.stop_reason = StopReason.COMPLETED
@@ -204,18 +168,17 @@ class Engine:
                 )
                 return
 
-            # ---- act + observe: execute tools, keep pairing ------------- #
-            self.context.add_assistant(result.message)  # assistant.tool_calls first...
+            # act + observe (assistant.tool_calls first, then tool results)
+            self.context.add_assistant(result.message)
 
             for tc in parsed.tool_calls:
                 if self._interrupt.is_set():
-                    # still must fill remaining tool results to keep pairing
+                    # fill remaining results to keep pairing intact
                     self.context.add_tool_result(
                         tc.id, "(interrupted by user)", tc.name
                     )
                     continue
 
-                # argument parse error -> ask the model to fix (limited)
                 if tc.id in parsed.parse_errors:
                     if repair_attempts < self.config.max_repair_attempts:
                         repair_attempts += 1
@@ -238,9 +201,7 @@ class Engine:
                 )
                 observation = self.executor.execute(tc)
                 self.stats.tool_calls += 1
-                self.context.add_tool_result(
-                    tc.id, observation, tc.name
-                )  # ...then tool result
+                self.context.add_tool_result(tc.id, observation, tc.name)
                 yield EngineEvent(
                     type=EventType.TOOL_RESULT,
                     tool_name=tc.name,
@@ -248,7 +209,7 @@ class Engine:
                     round=iteration,
                 )
 
-                # ---- no-progress detection ------------------------------ #
+                # no-progress detection
                 recent_results.append(observation[:200])
                 recent_results = recent_results[-NO_PROGRESS_LIMIT:]
                 if self._is_stuck(recent_results):
@@ -271,41 +232,36 @@ class Engine:
                 )
                 return
 
-            # keep context within budget after tool results were added
             self.context.trim_if_needed()
 
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
-    def _call_model(self) -> Iterator[EngineEvent | tuple[str, str]]:
-        """Call the model, streaming deltas to the CLI when enabled.
-
-        Yields ``(kind, text)`` tuples where kind is ``"text"`` or
-        ``"thinking"``. The final ChatResult is stored on
-        ``self._last_result`` for the caller.
-        """
+    def _stream_deltas(self) -> Iterator[EngineEvent]:
+        """Call the model and yield TEXT/THINKING deltas; the final
+        ChatResult lands on ``self._last_result``."""
         messages = self.context.messages_for_api()
         tools = self.executor.schemas()
         if self.config.stream:
             events, holder = self.client.chat_stream(
-                messages,
-                tools=tools,
-                temperature=self.config.temperature,
+                messages, tools=tools, temperature=self.config.temperature
             )
             for ev in events:
                 if ev.kind == "text_delta" and ev.text:
-                    yield ("text", ev.text)  # live token streaming
+                    yield EngineEvent(type=EventType.TEXT_DELTA, text=ev.text)
                 elif ev.kind == "thinking_delta" and ev.text:
-                    yield ("thinking", ev.text)  # reasoning, rendered dim
+                    yield EngineEvent(type=EventType.THINKING_DELTA, text=ev.text)
             self._last_result = holder.get()
         else:
             self._last_result = self.client.chat(
                 messages, tools=tools, temperature=self.config.temperature
             )
 
+    def _fail(self, text: str) -> Iterator[EngineEvent]:
+        """Emit a fatal ERROR event."""
+        self.stats.stop_reason = StopReason.ERROR
+        yield EngineEvent(type=EventType.ERROR, text=text)
+
     @staticmethod
     def _is_stuck(recent: list[str]) -> bool:
-        """True when the last tool results are identical failures/repeats."""
+        """True when the last tool results are identical."""
         if len(recent) < NO_PROGRESS_LIMIT:
             return False
         return len(set(recent)) == 1

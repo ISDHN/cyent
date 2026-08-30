@@ -40,18 +40,6 @@ def new_session_id() -> str:
     return f"{stamp}-{os.urandom(2).hex()}"
 
 
-@dataclass(slots=True)
-class SessionInfo:
-    """Summary of one archive on disk (for listings)."""
-
-    id: str
-    model: str
-    created_at: str
-    updated_at: str
-    messages: int
-    path: Path
-
-
 def _valid_prefix(messages: list[Message]) -> list[Message]:
     """Longest prefix whose ``tool_calls``/``tool`` pairing is intact.
 
@@ -94,6 +82,18 @@ def _valid_prefix(messages: list[Message]) -> list[Message]:
     return messages[:cut] if cut is not None else list(messages)
 
 
+@dataclass(slots=True)
+class SessionInfo:
+    """Summary of one archive on disk (for listings)."""
+
+    id: str
+    model: str
+    created_at: str
+    updated_at: str
+    messages: int
+    path: Path
+
+
 class SessionStore:
     """Creates, appends to, and loads session archives.
 
@@ -106,11 +106,6 @@ class SessionStore:
         self._dir = settings.workdir / ".cyent" / "sessions"
         self._path: Path | None = None  # currently active archive
         self._meta: dict = {}
-
-    @property
-    def _secrets(self) -> list[str]:
-        """Read live from Settings — secrets registered later also apply."""
-        return Settings.get().secrets
 
     # ------------------------------------------------------------------ #
     @property
@@ -161,7 +156,7 @@ class SessionStore:
             raise RuntimeError("no active session archive (start/adopt first)")
         data = message.to_archive()
         if isinstance(data.get("content"), str):
-            data["content"] = redact(data["content"], self._secrets)
+            data["content"] = redact(data["content"], Settings.get().secrets)
         if not self._path.exists():
             self._dir.mkdir(parents=True, exist_ok=True)
             header = json.dumps(self._meta, ensure_ascii=False) + "\n"
@@ -218,7 +213,7 @@ class SessionStore:
                     continue
                 try:
                     messages.append(Message.from_archive(data))
-                except Exception:  # noqa: BLE001 — never crash on bad rows
+                except Exception:
                     log.warning("session %s: unreadable message dropped", session_id)
                     break
 

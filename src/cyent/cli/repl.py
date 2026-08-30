@@ -124,30 +124,30 @@ class EventRenderer:
             self._w(ANSI_RESET, end="")
             self._thinking = False
 
+    def _close_blocks(self) -> None:
+        """Close any open thinking/streamed-text block."""
+        self._break_thinking()
+        self._break_stream()
+
     # ------------------------------------------------------------------ #
     def render(self, event: EngineEvent) -> None:
         match event.type:
             case EventType.THINKING_DELTA:
-                # Reasoning content: streamed in light gray. If normal text
-                # starts afterwards, the color is reset by _break_thinking.
+                # Reasoning content: streamed in light gray.
                 if not self._thinking:
                     self._break_stream()
                     self._w(ANSI_THINKING, end="")
                     self._thinking = True
                 self._w(event.text, end="", flush=True)
             case EventType.TEXT_DELTA:
-                # Live token streaming: print deltas inline, no newline.
                 self._break_thinking()
                 self._w(event.text, end="", flush=True)
                 self._streaming = True
             case EventType.ROUND_START:
                 if event.round > 1:
-                    self._break_thinking()
-                    self._break_stream()
+                    self._close_blocks()
             case EventType.TOOL_START:
-                # A tool call interrupts any streamed text; close the block.
-                self._break_thinking()
-                self._break_stream()
+                self._close_blocks()
                 args = event.tool_args
                 shown = args if len(args) <= 120 else args[:117] + "..."
                 self._w(f"  {ANSI_CYAN}[tool] {event.tool_name}({shown}){ANSI_RESET}")
@@ -155,19 +155,15 @@ class EventRenderer:
                 result = event.tool_result
                 if len(result) > 400:
                     result = result[:397] + "..."
-                # Failed tool runs (errors, non-zero exit, timeouts) are
-                # rendered in red; successful ones in green.
-                failed = self.is_failed_result(result)
-                color = ANSI_RED if failed else ANSI_GREEN
+                # Failed tool runs render red; successful ones green.
+                color = ANSI_RED if self.is_failed_result(result) else ANSI_GREEN
                 indented = "\n".join(
                     f"  {color}| {line}{ANSI_RESET}" for line in result.splitlines()
                 )
                 self._w(indented)
             case EventType.FINAL:
-                # The final answer was already streamed token-by-token; just
-                # close the block and print the run summary.
-                self._break_thinking()
-                self._break_stream()
+                # The answer was already streamed; close and print the summary.
+                self._close_blocks()
                 reason = event.stop_reason or StopReason.COMPLETED
                 if reason != StopReason.COMPLETED:
                     self._w(f"  {ANSI_YELLOW}[stopped: {reason.value}]{ANSI_RESET}")
@@ -177,12 +173,10 @@ class EventRenderer:
                     f"~{stats.prompt_tokens + stats.completion_tokens} tokens)\n"
                 )
             case EventType.INTERRUPTED:
-                self._break_thinking()
-                self._break_stream()
+                self._close_blocks()
                 self._w("(interrupted)")
             case EventType.ERROR:
-                self._break_thinking()
-                self._break_stream()
+                self._close_blocks()
                 self._w(f"{ANSI_RED}[error] {event.text}{ANSI_RESET}\n")
 
     @staticmethod
@@ -191,12 +185,8 @@ class EventRenderer:
         head = result[:200].lstrip().lower()
         return (
             head.startswith("error")
-            or head.startswith("exit_code: 1")
-            or head.startswith("exit_code: -")
             or "timed out" in head
-            or "exit_code: 1" in result[:120]
-            or "exit_code: 2" in result[:120]
-            or "exit_code: -1" in result[:120]
+            or any(f"exit_code: {c}" in head for c in ("1", "2", "-1"))
         )
 
 
