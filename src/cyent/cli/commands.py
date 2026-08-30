@@ -9,9 +9,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from cyent.cli.prompts import build_system_prompt
-from cyent.core.context import ContextManager
-
 if TYPE_CHECKING:  # annotations only; runtime import would be circular
     from cyent.cli.repl import Repl
 
@@ -111,9 +108,11 @@ def _cmd_model(repl: Repl, arg: str) -> bool:
 
 
 def _cmd_clear(repl: Repl, arg: str) -> bool:
-    repl.context = ContextManager(system_prompt=build_system_prompt())
-    repl.engine.context = repl.context
-    print("context cleared.")
+    # Clearing starts a NEW archive; the old one stays on disk (/resume).
+    repl.context.restore([])
+    repl.store.start(model=repl.settings.model)
+    repl.session.resumed_from = None
+    print(f"context cleared; new session {repl.store.current_id}.")
     return False
 
 
@@ -133,6 +132,45 @@ def _cmd_stats(repl: Repl, arg: str) -> bool:
         f"| budget: {repl.context._budget} | trims: {st.trims} | summaries: {st.summaries}\n"
         f"  last run: rounds={es.rounds}, tool_calls={es.tool_calls}, stop={es.stop_reason}"
     )
+    return False
+
+
+def _cmd_sessions(repl: Repl, arg: str) -> bool:
+    sessions = repl.store.list_sessions()
+    if not sessions:
+        print("  no saved sessions.")
+        return False
+    current = repl.store.current_id
+    print(f"  {'ID':24s} {'model':16s} {'msgs':>5s}  updated (UTC)")
+    for s in sessions[:20]:
+        mark = "*" if s.id == current else " "
+        updated = s.updated_at[:19].replace("T", " ")
+        print(f"{mark} {s.id:24s} {s.model:16s} {s.messages:5d}  {updated}")
+    return False
+
+
+def _cmd_resume(repl: Repl, arg: str) -> bool:
+    if not arg:
+        print("usage: /resume <session-id>  (see /sessions)")
+        return False
+    try:
+        messages = repl.store.load(arg)
+    except FileNotFoundError:
+        print(f"no session {arg!r} — see /sessions")
+        return False
+    repl.context.restore(messages)
+    repl.store.adopt(arg)
+    repl.session.resumed_from = arg
+    print(f"resumed {arg} ({len(messages)} messages). /clear starts a new session.")
+    repl.show_history()
+    return False
+
+
+def _cmd_new(repl: Repl, arg: str) -> bool:
+    repl.context.restore([])
+    repl.store.start(model=repl.settings.model)
+    repl.session.resumed_from = None
+    print(f"new session {repl.store.current_id}.")
     return False
 
 
@@ -164,6 +202,22 @@ def default_commands() -> list[SlashCommand]:
             names=("/stats",),
             description="show context/token statistics",
             handler=_cmd_stats,
+        ),
+        SlashCommand(
+            names=("/sessions",),
+            description="list saved sessions",
+            handler=_cmd_sessions,
+        ),
+        SlashCommand(
+            names=("/resume",),
+            description="continue a saved session",
+            usage="<ID>",
+            handler=_cmd_resume,
+        ),
+        SlashCommand(
+            names=("/new",),
+            description="start a new session (archive kept)",
+            handler=_cmd_new,
         ),
         SlashCommand(
             names=("/quit", "/exit", "/q"),

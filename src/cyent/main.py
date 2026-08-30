@@ -24,20 +24,58 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Run a single task non-interactively and exit.",
     )
+    parser.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        help="Continue the most recent session.",
+    )
+    parser.add_argument(
+        "--resume",
+        metavar="ID",
+        default=None,
+        help="Resume a specific session (see --list-sessions).",
+    )
+    parser.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="List saved sessions and exit.",
+    )
     args = parser.parse_args(argv)
 
     from cyent.config.env import Settings
+    from cyent.core.session import SessionStore
     from cyent.log.logger import init_logging
 
     workdir = Path(args.workdir).resolve() if args.workdir else Path.cwd().resolve()
     Settings.load(workdir=workdir)
     init_logging()
 
+    if args.list_sessions:
+        sessions = SessionStore().list_sessions()
+        if not sessions:
+            print("no saved sessions.")
+            return 0
+        print(f"{'ID':24s} {'model':16s} {'msgs':>5s}  updated (UTC)")
+        for s in sessions:
+            updated = s.updated_at[:19].replace("T", " ")
+            print(f"{s.id:24s} {s.model:16s} {s.messages:5d}  {updated}")
+        return 0
+
+    resume_id = args.resume
+    if args.continue_session and not resume_id:
+        latest = SessionStore().latest()
+        if latest is None:
+            print("no saved session to continue; starting fresh.")
+        else:
+            resume_id = latest.id
+
     if args.print_mode:
         return _run_print_mode(args.print_mode)
     from cyent.cli.repl import launch
 
-    return launch()
+    return launch(resume_id=resume_id)
 
 
 def _run_print_mode(task: str) -> int:

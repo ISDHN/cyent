@@ -7,6 +7,7 @@ otherwise).
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from cyent.core.types import Message
@@ -37,6 +38,22 @@ class ContextManager:
         self._messages: list[Message] = []
         self._budget = token_budget
         self.stats = ContextStats()
+        self._on_append: list[Callable[[Message], None]] = []  # observers
+
+    # ------------------------------------------------------------------ #
+    # Persistence hook (session archives subscribe here; context stays
+    # archive-agnostic — it just broadcasts every appended message)
+    # ------------------------------------------------------------------ #
+    def subscribe(self, observer: Callable[[Message], None]) -> None:
+        """Call ``observer(message)`` after every appended message."""
+        self._on_append.append(observer)
+
+    def _notify(self, message: Message) -> None:
+        for observer in self._on_append:
+            try:
+                observer(message)
+            except Exception:  # noqa: BLE001 — persistence must not kill runs
+                log.exception("context observer failed")
 
     # ------------------------------------------------------------------ #
     # System prompt
@@ -54,12 +71,14 @@ class ContextManager:
     def add_user(self, content: str) -> Message:
         msg = Message.user(content)
         self._messages.append(msg)
+        self._notify(msg)
         return msg
 
     def add_assistant(self, message: Message) -> Message:
         if message.role != "assistant":
             raise ValueError("add_assistant expects an assistant message")
         self._messages.append(message)
+        self._notify(message)
         return message
 
     def add_tool_result(
@@ -67,6 +86,7 @@ class ContextManager:
     ) -> Message:
         msg = Message.tool_result(tool_call_id, content, name)
         self._messages.append(msg)
+        self._notify(msg)
         return msg
 
     # ------------------------------------------------------------------ #
@@ -75,6 +95,11 @@ class ContextManager:
     @property
     def messages(self) -> list[Message]:
         return list(self._messages)
+
+    def restore(self, messages: list[Message]) -> None:
+        """Replace history with restored messages (no observer broadcast:
+        archives already contain them; re-broadcasting would duplicate)."""
+        self._messages = list(messages)
 
     def messages_for_api(self) -> list[Message]:
         """Full payload for the API: system prompt + history."""

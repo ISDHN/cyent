@@ -101,6 +101,18 @@ class Message:
         )
 
     # ------------------------------------------------------------------ #
+    # Session-archive serialization (JSONL rows; see core/session.py)
+    # ------------------------------------------------------------------ #
+    def to_archive(self) -> dict[str, Any]:
+        """Wire format plus the archive row marker."""
+        return {"type": "message", **self.to_openai()}
+
+    @classmethod
+    def from_archive(cls, data: dict[str, Any]) -> Message:
+        """Inverse of ``to_archive`` (ignores the row marker)."""
+        return cls.from_openai(data)
+
+    # ------------------------------------------------------------------ #
     # Convenience constructors
     # ------------------------------------------------------------------ #
     @classmethod

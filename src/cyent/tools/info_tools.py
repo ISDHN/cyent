@@ -1,6 +1,5 @@
 """Info tools: current working directory, environment info, project tree."""
 
-
 import os
 import platform
 import sys
@@ -85,6 +84,7 @@ class ProjectTreeTool(WorkspaceBoundTool):
         "logs",
         ".ruff_cache",
         ".idea",
+        ".cyent",
     }
 
     def run(self, path: str = ".", max_entries: int = 200, **_: Any) -> str:

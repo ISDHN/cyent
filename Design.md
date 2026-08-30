@@ -61,6 +61,7 @@ flowchart TD
 | **工具层**       | `tools/`            | 工具 schema 声明、本地实现                   | OpenCode `tools` 注册表                     |
 | **工具执行器**   | `tools/executor.py` | 参数校验、分发、隔离、超时                   | Claude Code `ToolExecutor`                  |
 | **错误处理层**   | `utils/errors.py`   | API/工具异常、重试退避                       | 各项目 `retry` / `exceptions`               |
+| **会话持久化层** | `core/session.py`   | 会话存档：序列化、原子写、恢复与配对校验     | Claude Code `--resume` / sessions           |
 
 ```mermaid
 flowchart LR
@@ -91,6 +92,8 @@ flowchart LR
     LOG -.-> CORE_ENGINE
     CONFIG -.-> LOG
     CONFIG -.-> LLM
+    CORE_CONTEXT -.-> SESSION[Session Store 会话存档]
+    SESSION -.-> CORE_CONTEXT
 ```
 
 ---
@@ -178,12 +181,82 @@ flowchart LR
 - **工具参数非法 / 执行崩溃 / 超时**：转为可读错误文本回填给模型，不中断循环。
 - **解析失败**：附格式修正提示，限次重试。
 
+### 4.11 会话持久化层 `cyent/core/session.py`（M8，未实现）
+
+**目标**：把一次会话的完整消息历史（含工具调用配对）保存到磁盘，下次启动可恢复继续，跨进程延续对话上下文。
+
+**存档格式（JSON Lines，每行一个独立 JSON 文档）**：
+
+```jsonc
+// .cyent/sessions/<id>.jsonl  —— 首行 meta，后续每行一条消息
+{"type": "meta", "version": 1, "id": "20260830-143025-a1b2", "model": "glm-5.3-flash",
+ "workdir": "E:\\Code\\Cyent", "created_at": "...", "updated_at": "..."}
+{"type": "message", "role": "user", "content": "统计 src 下 Python 行数"}
+{"type": "message", "role": "assistant", "content": null, "tool_calls": [...]}
+{"type": "message", "role": "tool", "tool_call_id": "call_x", "content": "…"}
+```
+
+**关键设计决策**：
+
+1. **复用既有序列化**：消息行直接用 `Message.to_openai()` 的输出（`from_openai` 可逆），不发明第二套格式——序列化正确性已被现有测试覆盖。
+2. **JSONL 而非单个 JSON**：追加写一行即可持久化一条消息，无需重写整个文件；进程崩溃时最多丢最后一行，天然抗损坏。
+3. **原子写**：每行 append 前 flush + fsync；meta 行的 `updated_at` 更新走"写临时文件 + os.replace"原子替换，避免半写状态。
+4. **配对完整性是恢复红线**：加载时逐行校验 `assistant.tool_calls` 与 `tool` 回填的配对（复用 `assert_pairing_valid` 思路）；损坏/断链的行**丢弃到最近合法边界**并警告，绝不带着坏历史调 API（否则 400）。
+5. **system prompt 不入档**：system prompt 由 `build_system_prompt()` 在加载时按当前环境重新渲染（workdir/平台可能已变化），存档只保留对话历史。
+6. **脱敏前置**：写盘前对消息内容过 `redact()`，存档本身不落密钥；与日志同一套注册表。
+7. **存档目录**：`Settings.workdir / ".cyent" / "sessions/"`，随项目走（换 workdir 即换会话空间）；目录加入工具层 `IGNORE_DIRS`，避免 `search_text`/`project_tree` 扫到存档。
+8. **版本字段**：meta 行带 `version`，未来格式变更时加载器可按版本迁移或明确拒绝。
+
+**对外接口（草案）**：
+
+```python
+class SessionStore:
+    def __init__(self, workdir: Path, secrets: list[str]) -> None: ...
+    def start(self, model: str) -> SessionArchive: ...          # 新建存档（写 meta 行）
+    def append(self, message: Message) -> None: ...             # 追加一条消息（脱敏后写盘）
+    def flush_meta(self) -> None: ...                           # 原子更新 updated_at/model
+    def load(self, session_id: str) -> list[Message]: ...       # 加载 + 配对校验 + 损坏截断
+    def list_sessions(self) -> list[SessionInfo]: ...           # 列出可恢复会话（id/model/时间/消息数）
+    def latest(self) -> SessionInfo | None: ...                 # 最近一次会话（--continue 用）
+
+# Message 需补两个方法（types.py）：
+def to_archive(self) -> dict: ...        # = to_openai() + {"type": "message"}
+@classmethod
+def from_archive(cls, line: dict) -> Message: ...  # = from_openai() 的别名封装
+```
+
+**CLI 集成（斜杠命令 + 启动参数）**：
+
+| 入口 | 行为 |
+| ---- | ---- |
+| `cyent --continue` / `-c` | 加载最近会话继续 |
+| `cyent --resume <ID>` | 加载指定会话 |
+| `cyent --list-sessions` | 列出可恢复会话后退出 |
+| `/sessions` | REPL 内列出会话 |
+| `/resume <ID>` | REPL 内切换到指定会话 |
+| `/new` | 开新会话（当前会话封盘） |
+
+**写入时机**：`ContextManager.add_*` 返回消息后由 REPL/引擎侧调用 `store.append()`（观察者式挂钩，`ContextManager` 本身不感知存档，保持单一职责）；`/clear` 不删档，仅开新档。
+
+**与既有机制的关系**：
+- **不替代 trim/summarize**：存档保存**全量**历史；恢复时全量载入后由 `ContextManager` 的预算机制自行裁剪——存档是"冷存储"，上下文是"热窗口"。
+- **不替代日志**：日志面向调试（含异常栈），存档面向对话延续；两者都脱敏。
+- **Engine/LLMClient 零改动**：持久化完全在 ContextManager 外围挂钩，符合"交互与引擎解耦"原则。
+
+**验收标准（M8）**：
+1. 对话若干轮后退出，`cyent --continue` 能恢复全部历史并继续对话（模型能引用早前上下文）；
+2. 存档文件中不出现 API key（脱敏生效）；
+3. 人为截断/损坏存档最后一行，加载不崩溃，丢弃损坏行并警告；
+4. 恢复后 trim/summarize 照常工作（长会话恢复后仍不爆上下文）；
+5. `/sessions`、`/resume`、`/new` 命令可用，`--list-sessions` 输出 id/model/时间/消息数。
+
 ---
 
 ## 五、安全与隔离（Cyent 强制）
 - `.env` 在 `.gitignore`；代码只读环境变量；`redact()` 全链路脱敏（日志、工具输出、异常信息）。
 - 命令工具默认 workdir 边界 + 危险命令开关；文件工具路径白名单。
 - 工具输出与日志均经过滤，避免 key / token 泄漏到文件或回显到模型与终端。
+- 会话存档写盘前脱敏；`.cyent/` 目录加入 `.gitignore` 与工具层忽略列表。
 
 ---
 
@@ -210,7 +283,8 @@ Cyent/                         # 项目根
 │   │   ├── types.py           # Message/ToolCall/ToolSchema/ChatResult
 │   │   ├── context.py         # 对话与上下文管理
 │   │   ├── parser.py          # OpenAI 输出解析
-│   │   └── engine.py          # 主循环与终止条件
+│   │   ├── engine.py          # 主循环与终止条件
+│   │   └── session.py         # 会话持久化（M8，未实现）
 │   ├── llm/
 │   │   └── client.py          # openai SDK 封装
 │   ├── tools/
@@ -223,7 +297,8 @@ Cyent/                         # 项目根
 │       ├── errors.py          # 异常类型与重试退避
 │       └── redact.py          # 敏感信息过滤
 ├── tests/                     # 单元测试
-└── logs/                      # 运行时日志（gitignore）
+├── logs/                      # 运行时日志（gitignore）
+└── .cyent/sessions/           # 会话存档（M8，gitignore）
 ```
 
 ---
@@ -239,6 +314,7 @@ Cyent/                         # 项目根
 | M5   | `context.py` token/裁剪/摘要                   | 长任务不爆上下文                  |
 | M6   | `errors.py` 重试 + `redact` 脱敏               | 网络抖动恢复，key 不泄漏          |
 | M7   | CLI 打磨 + 演示脚本 + README/视频              | 跑通真实任务，录制视频            |
+| M8   | `session.py` 会话持久化 + `--continue`/`--resume` + `/sessions` `/resume` `/new` | 退出后可恢复继续对话（设计见 4.11，未实现） |
 
 ---
 
@@ -260,6 +336,7 @@ Cyent/                         # 项目根
 | 需要日志                      | `log/logger.py`（分级 + 轮转 + 脱敏）                        |
 | 项目名 `Cyent`                | 包名 `cyent`                                                 |
 | Python 3.14                   | `requires-python=">=3.14"`                                   |
+| 会话持久化（M8）              | `core/session.py` JSONL 存档 + 配对校验 + 脱敏（见 4.11）    |
 | API Key 不落仓库/README/视频  | `.gitignore` + `.env` + 全链路 `redact`                      |
 
 ---

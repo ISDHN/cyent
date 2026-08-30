@@ -4,7 +4,6 @@ All paths are confined to the workspace root (path whitelist) unless
 ``allow_outside`` is explicitly enabled.
 """
 
-
 import fnmatch
 import os
 import re
@@ -296,6 +295,7 @@ class SearchTool(WorkspaceBoundTool):
         ".pytest_cache",
         "logs",
         ".ruff_cache",
+        ".cyent",
     }
 
     def run(

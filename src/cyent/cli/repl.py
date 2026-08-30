@@ -24,6 +24,8 @@ from cyent.core.engine import (
     StopReason,
 )
 from cyent.llm.client import LLMClient
+from cyent.core.session import SessionStore
+from cyent.core.types import Message
 from cyent.tools.command_tools import RunCommandTool
 from cyent.tools.executor import ToolExecutor
 from cyent.tools.file_tools import build_file_tools
@@ -53,13 +55,14 @@ ANSI_YELLOW = "\x1b[33m"  # warnings (stopped reasons)
 
 
 class Session:
-    """Assembled agent stack: client + context + executor + engine.
+    """Assembled agent stack: client + context + executor + engine + archive.
 
     Configuration comes from the Settings singleton (Settings.get()); the
-    same wiring serves the interactive REPL and single-task mode.
+    same wiring serves the interactive REPL and single-task mode. Every
+    appended message is persisted to the session archive (JSONL).
     """
 
-    def __init__(self, *, stream: bool = True) -> None:
+    def __init__(self, *, stream: bool = True, resume_id: str | None = None) -> None:
         settings = Settings.get()
         self.log = logging.getLogger("cyent")
 
@@ -81,6 +84,19 @@ class Session:
             self.executor,
             EngineConfig(stream=stream),  # no iteration cap; termination via events
         )
+
+        # Session archive: resume an existing one or start fresh. The store
+        # subscribes to context appends, so persistence needs no engine changes.
+        self.store = SessionStore()
+        if resume_id:
+            messages = self.store.load(resume_id)
+            self.context.restore(messages)
+            self.store.adopt(resume_id)
+            self.resumed_from = resume_id
+        else:
+            self.store.start(model=settings.model)
+            self.resumed_from = None
+        self.context.subscribe(self.store.append)
 
 
 class EventRenderer:
@@ -184,6 +200,45 @@ class EventRenderer:
         )
 
 
+def _clip(text: str, limit: int = 120) -> str:
+    """Collapse whitespace/newlines and truncate to one visual line."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 3] + "..."
+
+
+def render_transcript(messages: list[Message], *, last: int = 20) -> None:
+    """Print a compact transcript of restored history (one line per message).
+
+    Used after --continue/--resume and /resume so the user can see what they
+    are continuing. Only the last ``last`` messages are shown; tool calls are
+    cyan, tool results green/red by outcome, matching the live renderer.
+    """
+    if not messages:
+        return
+    shown = messages[-last:]
+    hidden = len(messages) - len(shown)
+    if hidden:
+        print(f"  {ANSI_DIM}... {hidden} earlier message(s) not shown{ANSI_RESET}")
+    for m in shown:
+        name = f"{m.role:<9s}"
+        if m.role == "user":
+            print(f"  {ANSI_CYAN}{name}{ANSI_RESET} > {_clip(m.content or '')}")
+        elif m.role == "assistant":
+            if m.content:
+                print(f"  {name} > {_clip(m.content)}")
+            for tc in m.tool_calls or []:
+                print(
+                    f"  {ANSI_CYAN}{name}{ANSI_RESET} [tool] "
+                    f"{tc.name}({_clip(tc.raw_arguments, 60)})"
+                )
+        elif m.role == "tool":
+            content = m.content or ""
+            color = ANSI_RED if EventRenderer.is_failed_result(content) else ANSI_GREEN
+            print(f"  {color}{name}{ANSI_RESET} | {_clip(content)}")
+        else:
+            print(f"  {ANSI_DIM}{name}{ANSI_RESET} {_clip(m.content or '')}")
+
+
 def run_single_task(session: Session, task: str) -> tuple[str, EngineStats]:
     """Run one task non-interactively and render events.
 
@@ -212,14 +267,20 @@ def run_single_task(session: Session, task: str) -> tuple[str, EngineStats]:
 class Repl:
     """Terminal REPL driving the engine."""
 
-    def __init__(self, *, commands: CommandRegistry | None = None) -> None:
-        self.session = Session()
+    def __init__(
+        self,
+        *,
+        commands: CommandRegistry | None = None,
+        resume_id: str | None = None,
+    ) -> None:
+        self.session = Session(resume_id=resume_id)
         self.settings = Settings.get()
         self.log = self.session.log
         self.client = self.session.client
         self.context = self.session.context
         self.executor = self.session.executor
         self.engine = self.session.engine
+        self.store = self.session.store
         self.renderer = EventRenderer(self.engine)
         # Slash commands: default set, or a custom registry for extension.
         self.commands = commands or CommandRegistry(default_commands())
@@ -234,7 +295,17 @@ class Repl:
             f"{ANSI_CYAN}model:{ANSI_RESET} {self.settings.model} "
             f"{ANSI_CYAN}| endpoint:{ANSI_RESET} {self.settings.base_url}"
         )
-        print(f"{ANSI_CYAN}workspace:{ANSI_RESET} {self.settings.workdir}\n")
+        print(f"{ANSI_CYAN}workspace:{ANSI_RESET} {self.settings.workdir}")
+        if self.session.resumed_from:
+            n = len(self.context.messages)
+            print(
+                f"{ANSI_CYAN}resumed:{ANSI_RESET} {self.session.resumed_from} "
+                f"({n} messages restored)"
+            )
+        print(f"{ANSI_CYAN}session:{ANSI_RESET} {self.store.current_id}")
+        if self.session.resumed_from:
+            render_transcript(self.context.messages)
+        print()
 
         while True:
             try:
@@ -273,6 +344,10 @@ class Repl:
             self.engine.request_interrupt()
             print("\n(interrupted — back to prompt)")
 
+    def show_history(self, *, last: int = 20) -> None:
+        """Render a compact transcript of the current history (for /resume)."""
+        render_transcript(self.context.messages, last=last)
+
     # ------------------------------------------------------------------ #
     # Slash commands: dispatch via the registry (extensible)
     # ------------------------------------------------------------------ #
@@ -281,14 +356,16 @@ class Repl:
         return self.commands.dispatch(self, line)
 
 
-def launch(*, commands: CommandRegistry | None = None) -> int:
+def launch(
+    *, commands: CommandRegistry | None = None, resume_id: str | None = None
+) -> int:
     """Start the REPL (settings singleton must already be loaded).
 
     ``commands``: optional custom CommandRegistry to extend/replace the
-    built-in slash commands.
+    built-in slash commands. ``resume_id``: session archive to continue.
     """
     try:
-        repl = Repl(commands=commands)
+        repl = Repl(commands=commands, resume_id=resume_id)
     except ConfigError as exc:
         print("Configuration problem:\n", exc)
         print("\nCopy .env.example to .env and fill in your endpoint/key/model.")
