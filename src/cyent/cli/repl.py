@@ -69,12 +69,16 @@ class Session:
             raise ConfigError("\n".join(problems))
 
         self.client = LLMClient()
-        self.context = ContextManager(system_prompt=build_system_prompt())
         self.executor = ToolExecutor(
             build_file_tools(settings.workdir)
             + build_info_tools(settings.workdir)
             + [RunCommandTool(settings.workdir)],
             secrets=settings.secrets,
+        )
+        # The system prompt's Tools section is collected from the executor's
+        # registered tools, so the executor must be built first.
+        self.context = ContextManager(
+            system_prompt=build_system_prompt(self.executor.schemas())
         )
         self.engine = Engine(
             self.client,

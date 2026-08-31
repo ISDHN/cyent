@@ -1,6 +1,5 @@
 """Command tool: run local commands with timeout, workdir boundary, output caps."""
 
-
 import os
 import subprocess
 from pathlib import Path
@@ -36,7 +35,8 @@ class RunCommandTool(BaseTool):
     description = (
         "Run a shell command in the workspace directory and return stdout, stderr "
         "and the exit code. Use for builds, tests, git, etc. Output is truncated. "
-        "A timeout (seconds, default 30, max 120) applies."
+        "A timeout (seconds, default 30, max 120) kills the whole process tree; "
+        "long-running servers will time out — start them only when the user asks."
     )
     parameters: dict[str, Any] = {
         "type": "object",

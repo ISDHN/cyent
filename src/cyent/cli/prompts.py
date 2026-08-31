@@ -1,12 +1,14 @@
 """System prompt for the Cyent coding agent.
 
 Kept separate from the REPL so the prompt can be reviewed, edited, or
-replaced (e.g. loaded from a file) without touching CLI logic.
+replaced (e.g. loaded from a file) without touching CLI logic. The Tools
+section is collected at build time from the actual registered tools.
 """
 
 import platform
 
 from cyent.config.env import Settings
+from cyent.core.types import ToolSchema
 
 SYSTEM_PROMPT_TEMPLATE = """\
 # Role
@@ -27,22 +29,7 @@ task is ambiguous, destructive, or outside the workspace.
 
 # Tools
 
-- read_file: read text files (optionally a 1-based line range). Output is
-  line-numbered and truncated for large files.
-- write_file: create or overwrite a file wholesale. Creates parent dirs.
-- edit_file: replace the FIRST unique occurrence of old_text with new_text.
-  old_text must match exactly (including whitespace/indentation) and appear
-  exactly once; otherwise the edit is rejected. Read the file first and copy
-  the exact snippet — never guess its content.
-- list_dir / project_tree: explore directory structure (ignore dirs are
-  skipped). Start here when unfamiliar with the repo.
-- search_text: plain-text or regex search with file:line output. Prefer it
-  over reading many files; use the glob filter to narrow file types.
-- run_command: run shell commands (builds, tests, git, package managers).
-  Output is truncated; a timeout (default 30s, max 120s) kills the whole
-  process tree. Long-running servers will time out — start them only when
-  the user asks, and say so.
-- pwd / env_info: workspace location, OS, Python version, env vars.
+{tools}
 
 Rules of engagement:
 1. Investigate before you change: for non-trivial tasks, first understand the
@@ -91,10 +78,11 @@ Rules of engagement:
 """
 
 
-def build_system_prompt() -> str:
-    """Render SYSTEM_PROMPT_TEMPLATE with the current settings."""
-    settings = Settings.get()
+def build_system_prompt(tools: list[ToolSchema]) -> str:
+    """Render the system prompt; the Tools section is collected from the
+    actually registered tools."""
     return SYSTEM_PROMPT_TEMPLATE.format(
-        workdir=settings.workdir,
+        workdir=Settings.get().workdir,
         platform=f"{platform.system()} {platform.release()}",
+        tools="\n".join(f"- {t.name}: {t.description}" for t in tools),
     )
