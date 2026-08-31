@@ -128,6 +128,22 @@ class EventRenderer:
         self._break_stream()
 
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _tool_line(name: str, args: str) -> str:
+        """One-line tool-call rendering (args truncated)."""
+        shown = args if len(args) <= 120 else args[:117] + "..."
+        return f"  {ANSI_CYAN}[tool] {name}({shown}){ANSI_RESET}"
+
+    @staticmethod
+    def _tool_result_lines(result: str) -> str:
+        """Tool-result rendering: truncated, indented, colored by outcome."""
+        if len(result) > 400:
+            result = result[:397] + "..."
+        color = ANSI_RED if EventRenderer.is_failed_result(result) else ANSI_GREEN
+        return "\n".join(
+            f"  {color}| {line}{ANSI_RESET}" for line in result.splitlines()
+        )
+
     def render(self, event: EngineEvent) -> None:
         match event.type:
             case EventType.THINKING_DELTA:
@@ -146,19 +162,9 @@ class EventRenderer:
                     self._close_blocks()
             case EventType.TOOL_START:
                 self._close_blocks()
-                args = event.tool_args
-                shown = args if len(args) <= 120 else args[:117] + "..."
-                self._w(f"  {ANSI_CYAN}[tool] {event.tool_name}({shown}){ANSI_RESET}")
+                self._w(self._tool_line(event.tool_name, event.tool_args))
             case EventType.TOOL_RESULT:
-                result = event.tool_result
-                if len(result) > 400:
-                    result = result[:397] + "..."
-                # Failed tool runs render red; successful ones green.
-                color = ANSI_RED if self.is_failed_result(result) else ANSI_GREEN
-                indented = "\n".join(
-                    f"  {color}| {line}{ANSI_RESET}" for line in result.splitlines()
-                )
-                self._w(indented)
+                self._w(self._tool_result_lines(event.tool_result))
             case EventType.FINAL:
                 # The answer was already streamed; close and print the summary.
                 self._close_blocks()
@@ -168,7 +174,7 @@ class EventRenderer:
                 stats = self.engine.stats
                 self._w(
                     f"  ({stats.rounds} rounds, {stats.tool_calls} tool calls, "
-                    f"~{stats.prompt_tokens + stats.completion_tokens} tokens)\n"
+                    f"~{stats.prompt_tokens + stats.completion_tokens} tokens)"
                 )
             case EventType.INTERRUPTED:
                 self._close_blocks()
@@ -188,43 +194,25 @@ class EventRenderer:
         )
 
 
-def _clip(text: str, limit: int = 120) -> str:
-    """Collapse whitespace/newlines and truncate to one visual line."""
-    flat = " ".join(text.split())
-    return flat if len(flat) <= limit else flat[: limit - 3] + "..."
+def render_transcript(messages: list[Message]) -> None:
+    """Print the restored history exactly as a live run would render it.
 
-
-def render_transcript(messages: list[Message], *, last: int = 20) -> None:
-    """Print a compact transcript of restored history (one line per message).
-
-    Used after --continue/--resume and /resume so the user can see what they
-    are continuing. Only the last ``last`` messages are shown; tool calls are
-    cyan, tool results green/red by outcome, matching the live renderer.
+    Used after --continue/--resume and /resume. Reuses the EventRenderer's
+    tool formatting so the transcript matches the live output line for line.
     """
-    if not messages:
-        return
-    shown = messages[-last:]
-    hidden = len(messages) - len(shown)
-    if hidden:
-        print(f"  {ANSI_DIM}... {hidden} earlier message(s) not shown{ANSI_RESET}")
-    for m in shown:
-        name = f"{m.role:<9s}"
+    for m in messages:
         if m.role == "user":
-            print(f"  {ANSI_CYAN}{name}{ANSI_RESET} > {_clip(m.content or '')}")
+            print()  # blank line before user input, matching the live prompt
+            print(f"> {m.content or ''}")
         elif m.role == "assistant":
             if m.content:
-                print(f"  {name} > {_clip(m.content)}")
+                print(m.content)
             for tc in m.tool_calls or []:
-                print(
-                    f"  {ANSI_CYAN}{name}{ANSI_RESET} [tool] "
-                    f"{tc.name}({_clip(tc.raw_arguments, 60)})"
-                )
+                print(EventRenderer._tool_line(tc.name, tc.raw_arguments))
         elif m.role == "tool":
-            content = m.content or ""
-            color = ANSI_RED if EventRenderer.is_failed_result(content) else ANSI_GREEN
-            print(f"  {color}{name}{ANSI_RESET} | {_clip(content)}")
+            print(EventRenderer._tool_result_lines(m.content or ""))
         else:
-            print(f"  {ANSI_DIM}{name}{ANSI_RESET} {_clip(m.content or '')}")
+            print(f"  {ANSI_DIM}{m.content or ''}{ANSI_RESET}")
 
 
 def run_single_task(session: Session, task: str) -> tuple[str, EngineStats]:
@@ -293,10 +281,10 @@ class Repl:
         print(f"{ANSI_CYAN}session:{ANSI_RESET} {self.store.current_id}")
         if self.session.resumed_from:
             render_transcript(self.context.messages)
-        print()
 
         while True:
             try:
+                print()  # blank line before every prompt
                 user_input = input(f"[{self.settings.model}] > ").strip()
             except EOFError, KeyboardInterrupt:
                 print("\nbye.")
@@ -332,9 +320,9 @@ class Repl:
             self.engine.request_interrupt()
             print("\n(interrupted — back to prompt)")
 
-    def show_history(self, *, last: int = 20) -> None:
-        """Render a compact transcript of the current history (for /resume)."""
-        render_transcript(self.context.messages, last=last)
+    def show_history(self) -> None:
+        """Render the full current history as a conversation (for /resume)."""
+        render_transcript(self.context.messages)
 
     # ------------------------------------------------------------------ #
     # Slash commands: dispatch via the registry (extensible)
