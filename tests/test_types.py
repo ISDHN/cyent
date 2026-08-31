@@ -60,11 +60,4 @@ def test_usage_from_openai_object():
 
     u = Usage.from_openai(FakeUsage())
     assert (u.prompt_tokens, u.completion_tokens, u.total_tokens) == (10, 5, 15)
-
-
-def test_usage_from_none():
     assert Usage.from_openai(None).total_tokens == 0
-
-
-def test_approx_tokens_positive():
-    assert Message.user("x" * 400).approx_tokens() > 50

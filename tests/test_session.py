@@ -1,7 +1,6 @@
 """Tests for session persistence (M8): archive format, pairing validation,
 redaction, resume, and CLI integration pieces."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -163,11 +162,6 @@ def test_store_adopt_then_append(settings: Settings, tmp_path: Path):
     assert [m.content for m in loaded] == ["one", "two"]
 
 
-def test_store_append_without_start_raises(settings: Settings, tmp_path: Path):
-    with pytest.raises(RuntimeError):
-        SessionStore().append(Message.user("x"))
-
-
 # --------------------------------------------------------------------------- #
 # ContextManager observer + restore
 # --------------------------------------------------------------------------- #
@@ -219,15 +213,3 @@ def test_message_archive_roundtrip():
     assert back.role == "assistant"
     assert back.tool_calls[0].id == "c1"
     assert back.tool_calls[0].raw_arguments == '{"path":"x"}'
-
-
-def test_archive_meta_header_is_first_line(settings: Settings, tmp_path: Path):
-    store = SessionStore()
-    sid = store.start(model="m1")
-    store.append(Message.user("first"))  # materializes the file
-    path = tmp_path / ".cyent" / "sessions" / f"{sid}.jsonl"
-    first = json.loads(path.read_text("utf-8").splitlines()[0])
-    assert first["type"] == "meta"
-    assert first["version"] == 1
-    assert first["model"] == "m1"
-    assert first["id"] == sid

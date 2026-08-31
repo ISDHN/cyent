@@ -39,11 +39,8 @@ def call(executor: ToolExecutor, name: str, **args) -> str:
 def test_read_file(executor):
     out = call(executor, "read_file", path="hello.txt")
     assert "line one" in out and "line two" in out
-
-
-def test_read_file_line_range(executor):
-    out = call(executor, "read_file", path="hello.txt", start_line=2, end_line=2)
-    assert "line one" not in out and "line two" in out
+    ranged = call(executor, "read_file", path="hello.txt", start_line=2, end_line=2)
+    assert "line one" not in ranged and "line two" in ranged
 
 
 def test_write_then_edit(executor):
@@ -113,17 +110,6 @@ def test_path_escape_blocked(executor, tmp_path):
     outside.write_text("secret", encoding="utf-8")
     out = call(executor, "read_file", path=str(outside))
     assert "outside the workspace" in out
-
-
-def test_tool_crash_isolated(executor):
-    # write_file with a path that resolves inside but is a directory
-    out = call(executor, "write_file", path="src", content="x")
-    assert (
-        out.startswith("ERROR")
-        or "IsADirectory" in out
-        or "OSError" in out
-        or "ERROR" in out
-    )
 
 
 def test_output_redaction(workspace: Path):

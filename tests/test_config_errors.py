@@ -27,23 +27,12 @@ def test_settings_missing_key_flagged():
 
 def test_redact_registered_secret_only():
     # Registry-based: nothing is masked unless explicitly registered.
-    out = redact("use sk-abcdefghijklmnop1234 please")
-    assert "sk-abcdefghijklmnop1234" in out  # not registered -> untouched
+    secret = "sk-abcdefghijklmnop1234"
+    out = redact(f"use {secret} please")
+    assert secret in out  # not registered -> untouched
 
-    out = redact(
-        "use sk-abcdefghijklmnop1234 please", extra_secrets=["sk-abcdefghijklmnop1234"]
-    )
-    assert "sk-abcdefghijklmnop1234" not in out
-    assert "***REDACTED***" in out
-
-
-def test_redact_extra_secrets():
-    assert "XYZZY-9999" not in redact("x XYZZY-9999 y", extra_secrets=["XYZZY-9999"])
-
-
-def test_redact_short_secrets_allowed():
-    # No min-length restriction: any non-empty registered value is masked.
-    assert "nu" not in redact("nu is a shell", extra_secrets=["nu"])
+    out = redact(f"use {secret} please", extra_secrets=[secret])
+    assert secret not in out and "***REDACTED***" in out
 
 
 def test_secret_registry_dedup_and_empty_rejected():

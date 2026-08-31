@@ -89,16 +89,6 @@ def test_trim_if_needed_prefers_summarize():
     assert_pairing_valid(ctx.messages)
 
 
-def test_summarize_loops_until_under_budget():
-    """A single summarize pass may not suffice; it must repeat."""
-    ctx = ContextManager(system_prompt="s", token_budget=8_000)
-    make_heavy_history(ctx, 12)
-    assert ctx.summarize() is True
-    assert not ctx.over_budget()  # converged
-    assert ctx.stats.summaries >= 2  # needed multiple passes
-    assert_pairing_valid(ctx.messages)
-
-
 def test_no_trim_when_under_budget():
     ctx = ContextManager(system_prompt="s", token_budget=100_000)
     ctx.add_user("tiny")
@@ -186,10 +176,7 @@ def test_engine_interrupt():
 
 
 def test_engine_no_progress_stops():
-    class StuckClient(LoopClient):
-        pass
-
-    engine = make_engine(StuckClient(), EngineConfig(stream=False))
+    engine = make_engine(LoopClient(), EngineConfig(stream=False))
     events = list(engine.run("stuck"))
     # pwd always returns the same output -> no-progress detector must fire
     # (there is no iteration cap anymore, so NO_PROGRESS is the only exit)

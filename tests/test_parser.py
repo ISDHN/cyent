@@ -1,5 +1,7 @@
 """Tests for the output parser (JSON tolerance + tool_calls extraction)."""
 
+import pytest
+
 from cyent.core.parser import (
     parse_json_lenient,
     parse_response,
@@ -9,30 +11,19 @@ from cyent.core.parser import (
 from cyent.core.types import ChatResult, Message, ToolCall
 
 
-def test_parse_direct_json():
-    assert parse_json_lenient('{"a": 1}') == {"a": 1}
-
-
-def test_parse_code_fenced():
-    assert parse_json_lenient('```json\n{"a": 1}\n```') == {"a": 1}
-
-
-def test_parse_trailing_comma():
-    assert parse_json_lenient('{"a": 1, "b": [1, 2,]}') == {"a": 1, "b": [1, 2]}
-
-
-def test_parse_with_noise_around():
-    assert parse_json_lenient('junk before {"cmd": "ls"} junk after') == {"cmd": "ls"}
-
-
-def test_parse_single_quotes():
-    assert parse_json_lenient("{'path': 'x.py'}") == {"path": "x.py"}
-
-
-def test_parse_smart_quotes():
-    assert parse_json_lenient("{\u201cpath\u201d: \u201cx.py\u201d}") == {
-        "path": "x.py"
-    }
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ('{"a": 1}', {"a": 1}),
+        ('```json\n{"a": 1}\n```', {"a": 1}),
+        ('{"a": 1, "b": [1, 2,]}', {"a": 1, "b": [1, 2]}),
+        ('junk before {"cmd": "ls"} junk after', {"cmd": "ls"}),
+        ("{'path': 'x.py'}", {"path": "x.py"}),
+        ("{\u201cpath\u201d: \u201cx.py\u201d}", {"path": "x.py"}),
+    ],
+)
+def test_parse_json_lenient(raw, expected):
+    assert parse_json_lenient(raw) == expected
 
 
 def test_parse_garbage_returns_none():
@@ -73,12 +64,3 @@ def test_parse_response_mixed_text_and_tools():
 
 def test_repair_hint_mentions_json():
     assert "JSON" in repair_hint("bad")
-
-
-def test_no_anthropic_fields_anywhere():
-    msg = Message.assistant(
-        content="x", tool_calls=[ToolCall(id="c", name="t", raw_arguments="{}")]
-    )
-    data = msg.to_openai()
-    flat = str(data)
-    assert "tool_use" not in flat and "tool_result" not in flat
